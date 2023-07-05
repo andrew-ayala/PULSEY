@@ -1,9 +1,10 @@
+#Function to calculate coefficients to construct standing wave pulsation from combining +/- m-modes
 def LxMx(t, m, frequency=1,amp=1, phase0=0):
     """Construct pulsation coefficients of a single l-m spherical harmonic mode
 
     ### Parameters
 
-    t : array_like(int, float)
+    t : array_like (int, float)
         Array of time values of periodic pulsation
     m : int
         M-mode value to calculate sign direction of pulsation
@@ -31,6 +32,38 @@ def LxMx(t, m, frequency=1,amp=1, phase0=0):
 
 #Star class object to function as source for stellar pulsation
 class star:
+
+    """Initialize STAR object to simulate stellar pulsation
+
+    ### Parameters
+
+    lmArray : array_like (int, 2D)
+        Array of L-M modes of stellar pulsation
+    fArray : array_like (float)
+        Pulsation frequencies of respective L-M modes in lmArray
+    aArray : array_like (float)
+        Pulsation amplitudes of respective L-M modes in lmArray
+    phaseArray : array_like (float)
+        Initial phase of L-M mode pulsations in lmArray
+    inc : float (default = 90.0)
+        Inclination of star object relative to observer
+    lMax : int (default = None)
+        Maximum L-mode complexity of star object
+    fcn : float function (default = None)
+        Set function for transforming star object surface map values
+    osParam : int (default = 2)
+        Integer to determine number of pixels produced from surface map transform
+    observed : bool (default = True)
+        Boolean flag of amplitudes being either observed values or intrinsic values
+    
+    ### Returns
+
+    star : tuple
+        Star object with pulsation modes, frequencies, and amplitudes as indicated by user
+
+    ### Example
+    
+    """
 
     #Init function taking freq, amp, etc. to initialize star with features
     def __init__(self, lmArray, fArray, aArray, phaseArray, inc=90, lMax = None, fcn = None, osParam = 2, observed = True):
@@ -112,6 +145,7 @@ class star:
     def _computeMapCoeffs(self, timeArray):
         self.coeffArray = np.zeros((len(timeArray), len(self.map.y)))
         for i,time in enumerate(timeArray):
+            self.map.y[0] = 1.0
             self.map.y[1:] = 0
             for j in range(self.nSignals):
                     l = self.lmArray[j][0]
@@ -133,7 +167,7 @@ class star:
 
     #Calculate flux of surface map pulsation over given time sample (time Array given HERE)
     def computeFlux(self, timeArray, binaryIndicator=False):
-        """Construct pulsation coefficients of a single l-m spherical harmonic mode
+        """Compute output flux of star object over input time array
 
         ### Parameters
 
@@ -189,23 +223,55 @@ class star:
         _ = self.computeFlux([time], binaryIndicator=binaryFlag)
         
 
-    def visualize(self, fluxArray, mapArray):
+    def visualize(self):
         fig = plt.figure(figsize=(5,5))
         ax = fig.add_subplot(1,1,1)
         ax.axis('off')
-        imList = []
 
-        norm = np.linalg.norm(fluxArray)
-        normFluxArray = fluxArray/norm
+#         norm = np.linalg.norm(fluxArray)
+#         normFluxArray = fluxArray/norm
         # print(np.min(normFluxArray))
         # print(np.max(normFluxArray))
-        vRange = np.nanmax(np.abs(mapArray.flatten() - 1/np.pi))
+        #vRange = np.nanmax(np.abs(self.coeffArray.flatten() - 1/np.pi))
+        #vmid = 1.0/np.pi
+
+        # Render the surface values first
+        rendered = []
+        for coeffs in tqdm(self.coeffArray[::5]):
+            self.map.y[:] = coeffs
+            rendered.append(self.map.render())
+
+        # Find most extreme surface brightness excursions for color bar
+        vRange = np.nanmax(np.abs(np.array(rendered).flatten() - 1/np.pi))
         vmid = 1.0/np.pi
 
-        for i in mapArray[::5]:
-            im = ax.imshow(i, cmap="seismic", animated=True, vmin = vmid-vRange, vmax = vmid+vRange)
+        # Plot individual frames for animation
+        imList = []
+        for render in rendered:
+            im = ax.imshow(render, cmap="seismic_r", animated=True, vmin = vmid-vRange, vmax = vmid+vRange)
             imList.append([im])
 
         anim = animation.ArtistAnimation(fig, imList, interval = 50, blit=True)
         writergif = animation.PillowWriter(fps=30)
-        HTML(anim.to_html5_video())
+        display(HTML(anim.to_html5_video()))
+
+
+### OLD STUFF (MAYBE DELETE) ###
+"""
+
+# Loop to create true flux array using newly determined phase offset values
+for i,time in enumerate(timeArray):
+    map.y[1:] = 0
+    for j in range(len(fArray)):
+            l = lmArray[j][0]
+            m = lmArray[j][1]
+            posC,negC = LxMx(time, m, frequency=fArray[j],amp=aArray[j]*ampCoeffArray[j], phase0=phaseArray[j]+phaseOffsetArray[j])
+
+            map[l,np.abs(m)]  += posC
+            if m != 0:
+                map[l,-np.abs(m)] += negC
+            
+    fluxArray[i] = map.flux()
+    mapArray[i] = map.render()
+    coeffArray[i] = map.y
+"""
