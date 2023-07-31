@@ -101,6 +101,7 @@ class star:
         self.inc = inc
         self.fcn = fcn
         self.observed = observed
+        self.time = 0.0
 
         if self.fcn is not None:
             self.setTransFcn(self.fcn, osParam)
@@ -246,7 +247,7 @@ class star:
     #Function for computing flux map for SPECIFIC time instance and outputs map
     def setTime(self, time, binaryFlag):
         _ = self.computeFlux([time], binaryIndicator=binaryFlag)
-        
+        self.time = time
 
     def visualize(self):
         fig = plt.figure(figsize=(5,5))
@@ -278,6 +279,7 @@ class star:
 
         anim = animation.ArtistAnimation(fig, imList, interval = 50, blit=True)
         writergif = animation.PillowWriter(fps=30)
+        anim.save('Pulsation.gif',writer=writergif)
         display(HTML(anim.to_html5_video()))
 
 
