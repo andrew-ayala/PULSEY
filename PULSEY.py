@@ -1,3 +1,28 @@
+#Decription:
+"""
+This program creates a simulation of periodic non-radial stellar pulsation.  These pulsations are waves that propogate across the surface of a 
+star due to either pressure or gravitational gradients, known as p-mode and g-mode waves respectively. These pulsation waves can be modeled by 
+spherical harmonics.  Using the "Starry" python package one can model differential magnitudes of a spherical surface. However, there 
+are no methods within this package enabling these surfaces to evolve or vary over time-- or in another word, pulsate. My program attempts 
+to exploit the static nature of Starry to create a periodically pulsating stellar source by summing various spherical harmonic magnitude values
+over time.  
+"""
+
+### IMPORT PACKAGES ###
+import numpy as np
+import math as m
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import starry
+import matplotlib.animation as animation
+from IPython.display import HTML
+starry.config.lazy = False
+starry.config.quiet = True
+import lightkurve as lk
+from tqdm import tqdm
+import lmfit
+#import healpy
+
 #Function to calculate coefficients to construct standing wave pulsation from combining +/- m-modes
 def LxMx(t, m, frequency=1,amp=1, phase0=0):
     """Construct pulsation coefficients of a single l-m spherical harmonic mode
