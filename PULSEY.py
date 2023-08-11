@@ -102,6 +102,9 @@ class star:
         self.fcn = fcn
         self.observed = observed
         self.time = 0.0
+        self.flux = np.zeros(1)
+        self.timeArray = np.zeros(1)
+        
 
         if self.fcn is not None:
             self.setTransFcn(self.fcn, osParam)
@@ -121,7 +124,7 @@ class star:
         self.map.inc = 90 - self.inc
         #Look into creating inclination function
 
-        self._computeCoeffs()
+        self._computeAmpCoeffs()
 
     #Transform constructed stellar surface map to new values in accordance with input transform function
     def setTransFcn(self, fcn, osParam = 2):
@@ -129,9 +132,10 @@ class star:
 
         ### Parameters
 
-        fcn : function(float)
-        
-        ### Returns
+        fcn : float (default = 1.0)
+            Equation to transform surface magnitudes to observable values
+        osParam: int (default = 2)
+            Degree to which surface map of star will be granulated to pixels. Higher value equals more pixels
 
         ### Example
         
@@ -140,7 +144,14 @@ class star:
         self.fcn = fcn
 
     #Perform coefficient transform to retrieve necessary input amplitude map values in order to receive desired output amplitudes
-    def _computeCoeffs(self):
+    def _computeAmpCoeffs(self):
+        """Compute the amplitude coefficients for converting map values to desired observables
+
+        ### Parameters
+
+        ### Example
+        
+        """
         # DESIRED amplitudes set to ampCoeffArray, transform if observed flag is true
         self.ampCoeffArray = np.ones(self.nSignals)
         self.phaseOffsetArray = np.zeros(self.nSignals)
@@ -169,6 +180,17 @@ class star:
 
     #Compute coefficients necessary to construct surface maps for pulsation over given time sample
     def _computeMapCoeffs(self, timeArray):
+        """Construct surface maps for every timestamp in the given time period
+
+        ### Parameters
+
+        timeArray : array_like (float, 1D)
+            Time values over which to construct surface maps
+
+        ### Example
+        
+        """
+        self.timeArray = timeArray
         self.coeffArray = np.zeros((len(timeArray), len(self.map.y)))
         for i,time in enumerate(timeArray):
             self.map.y[0] = 1.0
@@ -193,28 +215,21 @@ class star:
 
     #Calculate flux of surface map pulsation over given time sample (time Array given HERE)
     def computeFlux(self, timeArray, binaryIndicator=False):
-        """Compute output flux of star object over input time array
+        """Compute output flux of star object over input time array and save as feature of star
 
         ### Parameters
 
-        t : array_like(int, float)
-            Array of time values of periodic pulsation
-        m : int
-            M-mode value to calculate sign direction of pulsation
-        frequency : float (default = 1.0)
-            Frequency of sinusoidal pulsation
-        amp : float (deafault = 1.0)
-            Amplitude of pulsation mode
-        phase0 : float (default = 0.0)
-            Phase offset of sinusoidal pulsation
+        timeArray : array_like (float, 1D)
+            Time values over which to construct surface maps
+
+        binaryIndicator : boolean (deafault = False)
+            Flag indicating whether star is in binary system
+        
         
         ### Returns
 
-        posCoeff : float
-            Positive coefficient of single L-M mode spherical harmonic pulsation
-
-        negCoeff : float
-            Negative coefficient of single L-M mode spherical harmonic pulsation
+        fluxArray : array_like (float, 1D)
+            Integrated disc flux values of star at each value of timeArray 
 
         ### Example
         
@@ -231,12 +246,42 @@ class star:
         else:
             for i,time in enumerate(timeArray):
                 self.map.y[:] = self.coeffArray[i,:]
+                self.time = time
                 fluxArray[i] = self.map.flux()
+        
+        self.flux = fluxArray
+        #self.time = timeArray[-1]
 
         return fluxArray
     
     #Construct binary system model using stellar pulsation source as primary and black source as secondary
     def binarySystem(self, r1, m1, r2, m2, sbRatio, period, t0):
+        """Inserts star within binary system with given paramater inputs
+
+        ### Parameters
+
+        r1 : float
+            Radius of primary star
+
+        m1 : float
+            Mass of primary star
+
+        r2 : float
+            Radius of secondary star
+
+        m2 : float
+            Mass of secondary star
+
+        sbRatio : float (Must be positive or 0)
+            Value of magnitude ratio of fluxes between primary and secondary star.  Higher value equals brighter secondary
+
+        
+        ### Returns
+
+        ### Example
+        
+        """
+
         pri = starry.Primary(self.map, r=r1, m=m1, prot=np.inf)
             #starry.Primary(starry.Map(ydeg=primary.ydeg, inc=primary.inc, amp=amp1), r=r1, m=m1, prot=np.inf)
         sec = starry.Secondary(starry.Map(ydeg=0, inc=0, amp=sbRatio), r=r2, m=m2, porb=period, prot=np.inf, t0=t0, inc=90)
@@ -246,10 +291,36 @@ class star:
 
     #Function for computing flux map for SPECIFIC time instance and outputs map
     def setTime(self, time, binaryFlag):
+        """Construct surface map at specific time isntance and associate time value as a feature of star
+
+        ### Parameters
+
+        time : float
+            Time value last associated with given star object
+
+        binaryFlag : boolean (deafault = False)
+            Flag indicating whether star is in binary system
+        
+        
+        ### Returns
+
+        ### Example
+        
+        """
+
         _ = self.computeFlux([time], binaryIndicator=binaryFlag)
-        self.time = time
+        #self.time = time
 
     def visualize(self):
+        """Construct animated gif visualizing star's pulsation over specific time period
+
+        ### Parameters
+        
+        ### Returns
+
+        ### Example
+        
+        """
         fig = plt.figure(figsize=(5,5))
         ax = fig.add_subplot(1,1,1)
         ax.axis('off')
