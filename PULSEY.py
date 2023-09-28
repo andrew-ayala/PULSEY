@@ -21,6 +21,7 @@ starry.config.quiet = True
 import lightkurve as lk
 from tqdm import tqdm
 import lmfit
+import warnings
 #import healpy
 
 ##Get/Set naming conventions
@@ -58,8 +59,9 @@ def LxMx(t, m, frequency=1,amp=1, phase0=0):
     ### Example
     
     """
-    posCoeff = amp*np.cos(2*np.pi*(frequency*t+phase0))
-    negCoeff = -np.sign(m) * amp*np.sin(2*np.pi*(frequency*t+phase0))
+    posCoeff = amp*np.cos(2*np.pi*(frequency*(t+phase0)))
+    #negCoeff = amp*np.sin(2*np.pi*(frequency*t+phase0))
+    negCoeff = -np.sign(m) * amp*np.sin(2*np.pi*(frequency*(t+phase0)))
     return posCoeff, negCoeff
 
 #Star class object to function as source for stellar pulsation
@@ -123,13 +125,14 @@ class star:
 
 
         self.nSignals = len(self.lmMode)
-        self._map = starry.Map(ydeg=self.lMax, amp=1.0)
-        self._map.inc = 90 - self.inc
+        self._map = starry.Map(ydeg=self.lMax, amp=1.0, inc = self.inc + 90)
         #Look into creating inclination function
 
         self._computeAmpCoeffs()
         self.computeMapCoeffs()
         self._computeFlux()
+
+        self.lat, self.lon, self.Y2P, self.P2Y, self.Dx, self.Dy = self._map.get_pixel_transforms(oversample=osParam)
 
         if self.fcn is not None:
             self.setTransFcn(self.fcn, osParam)
@@ -173,7 +176,7 @@ class star:
             timeSample = np.arange(0,1,0.25)
             testFluxArray = np.zeros(len(timeSample))
             for j, t in enumerate(timeSample):
-                self._map.y[1:] = 0
+                self._map.y[1:] = 0.0
                 l = self.lmMode[i][0]
                 m = self.lmMode[i][1]
                 posC,negC = LxMx(t, m, frequency=1, amp=1.0, phase0=0)
@@ -188,6 +191,9 @@ class star:
             maxAmp = maxAmp-1.0
             if self.observed:
                 self.ampCoeffArray[i] = 1.0/maxAmp
+                if(self.ampCoeffArray[i] > 1.0):
+                    warnings.warn("WARNING: Producing unphysical amplitude values!")
+                    
             self.phaseOffsetArray[i] = (timeSample[np.argmax(testFluxArray)]-0.25)
 
     #Compute coefficients necessary to construct surface maps for pulsation over given time sample
