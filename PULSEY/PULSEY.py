@@ -105,7 +105,7 @@ class star:
     """
 
     #Init function taking freq, amp, etc. to initialize star with features
-    def __init__(self, lmMode, freq, amp, phase, time = np.zeros(1), inc=90, lMax = None, fcn = None, osParam = 2, observed = True, binaryDictionary = None):
+    def __init__(self, lmMode, freq, amp, phase, inc=90, lMax = None, fcn = None, osParam = 2, observed = True):
         #Insert warning if fcn given and no lMax provided (make sure its large enough)
         #See if we can change complexity (lMax) of map after initialization
         self.lmMode = lmMode
@@ -115,7 +115,6 @@ class star:
         self.inc = inc
         self.fcn = fcn
         self.observed = observed
-        self.time = time
 
         #Save Y2P from pixel transform as feature of star
         
@@ -130,14 +129,12 @@ class star:
 
 
         self.nSignals = len(self.lmMode)
-        self._map = starry.Map(ydeg=self.lMax, amp=1.0, inc = self.inc + 90)
+        self._map = starry.Map(ydeg=self.lMax, amp=1.0, inc = self.inc - 90)
         #Look into creating inclination function
 
-        self._computeAmpCoeffs()
-        self.computeMapCoeffs()
-        self._computeFlux()
-
-        self.lat, self.lon, self.Y2P, self.P2Y, self.Dx, self.Dy = self._map.get_pixel_transforms(oversample=osParam)
+        self._computeAmpCoeffs() #Think about renaming
+        #self.computeMapCoeffs()
+        #self._computeFlux()
 
         if self.fcn is not None:
             self.setTransFcn(self.fcn, osParam)
@@ -172,8 +169,8 @@ class star:
         ### Example
         Add example
         """
-        # DESIRED amplitudes set to ampCoeffArray, transform if observed flag is true
-        self.ampCoeffArray = np.ones(self.nSignals)
+        # DESIRED amplitudes set to ampScaleFactor, transform if observed flag is true
+        self.ampScaleFactor = np.ones(self.nSignals)
         self.phaseOffsetArray = np.zeros(self.nSignals)
 
         #Sample map over arbitrary time to retrieve necessary amplitudes and phase to combine for constructing desired surfacd map
@@ -195,40 +192,15 @@ class star:
             maxAmp = np.nanmax(testFluxArray)
             maxAmp = maxAmp-1.0
             if self.observed:
-                self.ampCoeffArray[i] = 1.0/maxAmp
-                if(self.ampCoeffArray[i] > 1.0):
+                self.ampScaleFactor[i] = 1.0/maxAmp
+                if(self.ampScaleFactor[i] > 1.0):
                     warnings.warn("WARNING: Producing unphysical amplitude values!")
                     
             self.phaseOffsetArray[i] = (timeSample[np.argmax(testFluxArray)]-0.25)
 
     #Compute coefficients necessary to construct surface maps for pulsation over given time sample
-    def computeMapCoeffs(self):
-        """Construct surface maps for every timestamp in the given time period
-
-        ### Parameters
-
-        timeArray : array_like (float, 1D)
-            Time values over which to construct surface maps
-
-        ### Example
-        
-        """
-
-
-        #Remove saving pos/neg Coeffs to self._map.  Store directly in self.coeffArray
-        self.coeffArray = np.zeros((len(self.time), len(self._map.y)))
-        for i,t in enumerate(self.time):
-            self.coeffArray[i,:] = self.getMapCoeffs([t])
-            ###Insert function transform
-            if self.fcn is not None:
-                p = self.Y2P.dot(self._map.y)
-                newP = self.fcn(p)
-                self.coeffArray[i,:] = self.P2Y.dot(newP)
-                #print(p, newP, self.coeffArray[i])
-
-
     #Compute coefficients necessary to construct surface maps for pulsation over given time sample
-    def getMapCoeffs(self, time):
+    def computePulsation(self, time):
         """Construct surface maps for every timestamp in the given time period
 
         ### Parameters
@@ -239,7 +211,6 @@ class star:
         ### Example
         
         """
-
 
         #Remove saving pos/neg Coeffs to self._map.  Store directly in self.coeffArray
 
@@ -252,7 +223,7 @@ class star:
             for j in range(self.nSignals):
                     l = self.lmMode[j][0]
                     m = self.lmMode[j][1]
-                    posC,negC = _LxMx(t, m, frequency=self.freq[j],amp=self.amp[j]*self.ampCoeffArray[j], 
+                    posC,negC = _LxMx(t, m, frequency=self.freq[j],amp=self.amp[j]*self.ampScaleFactor[j], 
                                         phase0=self.phase[j]+self.phaseOffsetArray[j])
                     
                     #print(posC)
@@ -261,10 +232,15 @@ class star:
                     if m != 0:
                         coeffArray[i,lmIndex(l,-np.abs(m))] += negC
 
+            if self.fcn is not None:
+                p = self.Y2P.dot(coeffArray[i,:])
+                newP = self.fcn(p)
+                coeffArray[i,:] = self.P2Y.dot(newP)
+
         return coeffArray
 
     #Calculate flux of surface map pulsation over given time sample (time Array given HERE)
-    def _computeFlux(self, binaryIndicator=False):
+    def computeFlux(self, time, binaryIndicator=False):
         """Compute output flux of star object over input time array and save as feature of star
 
         ### Parameters
@@ -284,36 +260,7 @@ class star:
         ### Example
         
         """
-        
-        
-        self.flux = self.getFlux(self.time, binaryIndicator)
-
-    
-    #Internal starry dummy object
-
-    
-
-    def getFlux(self, time, binaryIndicator=False):
-        """Compute output flux of star object over input time array and save as feature of star
-
-        ### Parameters
-
-        timeArray : array_like (float, 1D)
-            Time values over which to construct surface maps
-
-        binaryIndicator : boolean (deafault = False)
-            Flag indicating whether star is in binary system
-        
-        
-        ### Returns
-
-        fluxArray : array_like (float, 1D)
-            Integrated disc flux values of star at each value of timeArray 
-
-        ### Example
-        
-        """
-        coeffArray = self.getMapCoeffs(time)
+        coeffArray = self.computePulsation(time)
         fluxArray = np.zeros(len(time))
 
 
@@ -368,26 +315,26 @@ class star:
 
 
     #Function for computing flux map for SPECIFIC time instance and outputs map
-    def setTime(self, time, binaryFlag):
-        """Construct surface map at specific time isntance and associate time value as a feature of star
+    # def setTime(self, time, binaryFlag):
+    #     """Construct surface map at specific time isntance and associate time value as a feature of star
 
-        ### Parameters
+    #     ### Parameters
 
-        time : float
-            Time value last associated with given star object
+    #     time : float
+    #         Time value last associated with given star object
 
-        binaryFlag : boolean (deafault = False)
-            Flag indicating whether star is in binary system
+    #     binaryFlag : boolean (deafault = False)
+    #         Flag indicating whether star is in binary system
         
         
-        ### Returns
+    #     ### Returns
 
-        ### Example
-        Returns the desired output
-        """
+    #     ### Example
+    #     Returns the desired output
+    #     """
 
-        _ = self.getFlux([time], binaryIndicator=binaryFlag)
-        #self.time = time
+    #     _ = self.getFlux([time], binaryIndicator=binaryFlag)
+    #     #self.time = time
 
     #Visualize should take a time parameter
     def visualizeStar(self):
@@ -481,7 +428,7 @@ for i,time in enumerate(timeArray):
     for j in range(len(freq)):
             l = lmMode[j][0]
             m = lmMode[j][1]
-            posC,negC = _LxMx(time, m, frequency=freq[j],amp=amp[j]*ampCoeffArray[j], phase0=phase[j]+phaseOffsetArray[j])
+            posC,negC = _LxMx(time, m, frequency=freq[j],amp=amp[j]*ampScaleFactor[j], phase0=phase[j]+phaseOffsetArray[j])
 
             map[l,np.abs(m)]  += posC
             if m != 0:
