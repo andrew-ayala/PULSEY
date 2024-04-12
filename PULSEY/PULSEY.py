@@ -11,7 +11,6 @@ over time.
 ### IMPORT PACKAGES ###
 import sys
 import os
-# sys.path.insert(0, '/Users/aayala/GitHub/starry')
 import starry
 starry.config.lazy = False
 starry.config.quiet = True
@@ -24,15 +23,10 @@ import matplotlib.animation as animation
 from IPython.display import HTML
 import lightkurve as lk
 from tqdm import tqdm
-# import lmfit
 from PIL import Image
 import warnings
-#import healpy
-
-##Get/Set naming conventions
 
 ### Calculate position in CoeffArray of given L,M index
-
 #Function to determine postition of desire spherical harmonic mode coefficient in L-M array
 def lmIndex(l, m):
     return l*(l+1) + m
@@ -105,7 +99,7 @@ class star:
     """
 
     #Init function taking freq, amp, etc. to initialize star with features
-    def __init__(self, lmMode, freq, amp, phase, inc=90, lMax = None, fcn = None, osParam = 2, observed = True):
+    def __init__(self, lmMode, freq, amp, phase, inc=90, obl = 0, lMax = None, fcn = None, osParam = 2, observed = True):
         #Insert warning if fcn given and no lMax provided (make sure its large enough)
         #See if we can change complexity (lMax) of map after initialization
         self.lmMode = lmMode
@@ -113,12 +107,13 @@ class star:
         self.amp = amp
         self.phase = phase
         self.inc = inc
+        self.obl = obl
         self.fcn = fcn
         self.observed = observed
-
-        #Save Y2P from pixel transform as feature of star
+        self.nSignals = len(lmMode)
+        self.unphysical = False
         
-        #Provided lMax means we will transform surface output values SH-maps.  Need to carry along larger transform array.
+        #Provided lMax means we will transform surface output values SH-maps
         if(lMax is None):
             if(len(lmMode) > 0):
                 self.lMax = np.max(self.lmMode)
@@ -128,17 +123,56 @@ class star:
             self.lMax = lMax
 
 
-        self.nSignals = len(self.lmMode)
-        self._map = starry.Map(ydeg=self.lMax, amp=1.0, inc = self.inc - 90)
+        self._map = starry.Map(ydeg=self.lMax, amp=1.0, inc = self.inc + 90, obl = self.obl)
         #Look into creating inclination function
 
-        self._computeAmpCoeffs() #Think about renaming
+        #Calculate
+        self._pulsationCorrections()
         #self.computeMapCoeffs()
-        #self._computeFlux()
+        #self.computePulsation([0])
 
         if self.fcn is not None:
             self.setTransFcn(self.fcn, osParam)
             self.lat, self.lon, self.Y2P, self.P2Y, self.Dx, self.Dy = self._map.get_pixel_transforms(oversample=osParam)
+
+
+    #Perform coefficient transform to retrieve necessary input amplitude map values in order to receive desired output amplitudes
+    def _pulsationCorrections(self):
+        """Compute the amplitude coefficients for converting map values to desired observables
+
+        ### Parameters
+
+        ### Example
+        Add example
+        """
+        # DESIRED amplitudes set to ampScaleFactor, transform if observed flag is true
+        self.ampScaleFactor = np.ones(self.nSignals)
+        self._phaseOffsetArray = np.zeros(self.nSignals)
+
+        #Sample map over arbitrary time to retrieve necessary amplitudes and phase to combine for constructing desired surfacd map
+        for i in range(len(self.lmMode)):
+            timeSample = np.arange(0.0,1.0,0.25)
+            testFluxArray = np.zeros(len(timeSample))
+            for j, t in enumerate(timeSample):
+                self._map.y[1:] = 0.0
+                l = self.lmMode[i][0]
+                m = self.lmMode[i][1]
+                posC,negC = _LxMx(t, m, frequency=1.0, amp=1.0, phase0=0)
+                self._map[l,np.abs(m)]  += posC
+                if m != 0:
+                    self._map[l,-np.abs(m)] += negC
+
+                testFluxArray[j] = self._map.flux()
+
+            #Save amp and phase coefficients for use in map construction
+            maxAmp = np.nanmax(testFluxArray)
+            maxAmp = maxAmp-1.0
+            if self.observed:
+                self.ampScaleFactor[i] = 1.0/maxAmp
+                if(self.ampScaleFactor[i] > 1.0):
+                    warnings.warn("WARNING: Producing unphysical amplitude values!")
+                    
+            self._phaseOffsetArray[i] = (timeSample[np.argmax(testFluxArray)]-0.25)
 
     #Transform constructed stellar surface map to new values in accordance with input transform function
     def setTransFcn(self, fcn):
@@ -160,45 +194,7 @@ class star:
         
         # self.lat = self.lat-self.inc
 
-    #Perform coefficient transform to retrieve necessary input amplitude map values in order to receive desired output amplitudes
-    def _computeAmpCoeffs(self):
-        """Compute the amplitude coefficients for converting map values to desired observables
 
-        ### Parameters
-
-        ### Example
-        Add example
-        """
-        # DESIRED amplitudes set to ampScaleFactor, transform if observed flag is true
-        self.ampScaleFactor = np.ones(self.nSignals)
-        self.phaseOffsetArray = np.zeros(self.nSignals)
-
-        #Sample map over arbitrary time to retrieve necessary amplitudes and phase to combine for constructing desired surfacd map
-        for i in range(len(self.lmMode)):
-            timeSample = np.arange(0,1,0.25)
-            testFluxArray = np.zeros(len(timeSample))
-            for j, t in enumerate(timeSample):
-                self._map.y[1:] = 0.0
-                l = self.lmMode[i][0]
-                m = self.lmMode[i][1]
-                posC,negC = _LxMx(t, m, frequency=1, amp=1.0, phase0=0)
-                self._map[l,np.abs(m)]  += posC
-                if m != 0:
-                    self._map[l,-np.abs(m)] += negC
-
-                testFluxArray[j] = self._map.flux()
-
-            #Save amp and phase coefficients for use in map construction
-            maxAmp = np.nanmax(testFluxArray)
-            maxAmp = maxAmp-1.0
-            if self.observed:
-                self.ampScaleFactor[i] = 1.0/maxAmp
-                if(self.ampScaleFactor[i] > 1.0):
-                    warnings.warn("WARNING: Producing unphysical amplitude values!")
-                    
-            self.phaseOffsetArray[i] = (timeSample[np.argmax(testFluxArray)]-0.25)
-
-    #Compute coefficients necessary to construct surface maps for pulsation over given time sample
     #Compute coefficients necessary to construct surface maps for pulsation over given time sample
     def computePulsation(self, time):
         """Construct surface maps for every timestamp in the given time period
@@ -224,7 +220,7 @@ class star:
                     l = self.lmMode[j][0]
                     m = self.lmMode[j][1]
                     posC,negC = _LxMx(t, m, frequency=self.freq[j],amp=self.amp[j]*self.ampScaleFactor[j], 
-                                        phase0=self.phase[j]+self.phaseOffsetArray[j])
+                                        phase0=self.phase[j]+self._phaseOffsetArray[j])
                     
                     #print(posC)
 
@@ -238,6 +234,12 @@ class star:
                 coeffArray[i,:] = self.P2Y.dot(newP)
 
         return coeffArray
+    
+    def show(self, time=0, cmap="seismic_r", **kwargs):
+        coeffArray = self.computePulsation(time)
+        self._map.y[:] = coeffArray
+        self._map.show(grid = False, cmap=cmap, **kwargs)
+
 
     #Calculate flux of surface map pulsation over given time sample (time Array given HERE)
     def computeFlux(self, time, binaryIndicator=False):
@@ -260,9 +262,12 @@ class star:
         ### Example
         
         """
+
+        if not hasattr(time, '__iter__'):
+                time = [time]
+
         coeffArray = self.computePulsation(time)
         fluxArray = np.zeros(len(time))
-
 
         if binaryIndicator == True:
             for i,t in enumerate(time):
@@ -279,7 +284,7 @@ class star:
     #Internal starry dummy object
     
     #Construct binary system model using stellar pulsation source as primary and black source as secondary
-    def setBinarySystem(self, r1, m1, r2, m2, sbRatio, period, t0):
+    def setBinarySystem(self, r1, m1, r2, m2, sbRatio, period, t0, inc=90):
         """Inserts star within binary system with given paramater inputs
 
         ### Parameters
@@ -308,36 +313,15 @@ class star:
 
         pri = starry.Primary(self._map, r=r1, m=m1, prot=np.inf)
             #starry.Primary(starry.Map(ydeg=primary.ydeg, inc=primary.inc, amp=amp1), r=r1, m=m1, prot=np.inf)
-        sec = starry.Secondary(starry.Map(ydeg=0, inc=0, amp=sbRatio), r=r2, m=m2, porb=period, prot=np.inf, t0=t0, inc=90)
+        sec = starry.Secondary(starry.Map(ydeg=0, inc=0, amp=sbRatio), r=r2, m=m2, porb=period, prot=np.inf, t0=t0, inc=inc)
 
         self.sys = starry.System(pri, sec)
 
+        # compute flux once to try to prime everything
+        _ = self.sys.flux(0)
 
 
-    #Function for computing flux map for SPECIFIC time instance and outputs map
-    # def setTime(self, time, binaryFlag):
-    #     """Construct surface map at specific time isntance and associate time value as a feature of star
-
-    #     ### Parameters
-
-    #     time : float
-    #         Time value last associated with given star object
-
-    #     binaryFlag : boolean (deafault = False)
-    #         Flag indicating whether star is in binary system
-        
-        
-    #     ### Returns
-
-    #     ### Example
-    #     Returns the desired output
-    #     """
-
-    #     _ = self.getFlux([time], binaryIndicator=binaryFlag)
-    #     #self.time = time
-
-    #Visualize should take a time parameter
-    def visualizeStar(self):
+    def visualizeStar(self, time):
         """Construct animated gif visualizing star's pulsation over specific time period
 
         ### Parameters
@@ -347,6 +331,19 @@ class star:
         ### Example
         
         """
+
+        # Have user give start and end time, throw Nyquist warningaz7
+        if not hasattr(time, '__iter__'):
+                time = [time]
+        
+        for i,t in enumerate(time[:-1]):
+            for f in self.freq:
+                if (time[i+1]-time[i]) > 1.0/f :
+                    warnings.warn("WARNING: One or more periods skipped between timestamp frames")
+                    break
+
+
+
         fig = plt.figure(figsize=(5,5))
         ax = fig.add_subplot(1,1,1)
         ax.axis('off')
@@ -358,9 +355,13 @@ class star:
         #vRange = np.nanmax(np.abs(self.coeffArray.flatten() - 1/np.pi))
         #vmid = 1.0/np.pi
 
+        
+
         # Render the surface values first
         rendered = []
-        for coeffs in tqdm(self.coeffArray[:,:]):
+        coeffArray = self.computePulsation(time)
+        
+        for coeffs in tqdm(coeffArray):
             self._map.y[:] = coeffs
             rendered.append(self._map.render())
 
@@ -371,21 +372,26 @@ class star:
         # Plot individual frames for animation
         imList = []
         for render in rendered:
-            im = ax.imshow(render, cmap="seismic_r", animated=True, vmin = vmid-vRange, vmax = vmid+vRange)
+            im = ax.imshow(render, cmap="seismic_r", animated=True, vmin = vmid-vRange, vmax = vmid+vRange, origin = "lower")
             imList.append([im])
 
         anim = animation.ArtistAnimation(fig, imList, interval = 50, blit=True)
         writergif = animation.PillowWriter(fps=30)
-        anim.save('Pulsation.gif',writer=writergif)
+        #anim.save('Pulsation.gif',writer=writergif)
         display(HTML(anim.to_html5_video()))
 
-    def visualizeBinary(self):
+    def visualizeBinary(self, time):
         fig = plt.figure(figsize=(5,5))
         ax = fig.add_subplot(1,1,1)
         ax.axis('off')
 
+        if not hasattr(time, '__iter__'):
+                time = [time]
+
+        coeffArray = self.computePulsation(time)
+
         rendered = []
-        for coeffs in tqdm(self.coeffArray[:,:]):
+        for coeffs in tqdm(coeffArray[:,:]):
             self._map.y[:] = coeffs
             rendered.append(self._map.render())
 
@@ -394,11 +400,11 @@ class star:
         vmid = 1.0/np.pi
         fileNames = []
         
-        for i in range(len(self.time)):
-            fileLength = int(np.ceil(np.log10(len(self.time))))
-            self.sys.primary.map.y[:] = self.coeffArray[i,:]
+        for i in range(len(time)):
+            fileLength = int(np.ceil(np.log10(len(time))))
+            self.sys.primary.map.y[:] = coeffArray[i,:]
             fileNames.append(f"./BinaryImages/{i:0{fileLength}}.png")
-            self.sys.show(t=self.time[i], figsize=(5, 5), cmap="seismic_r", file=fileNames[i])
+            self.sys.show(t=time[i], figsize=(5, 5), cmap="seismic_r", file=fileNames[i])
 
         
         frames = [Image.open(fileName).convert("RGBA") for fileName in fileNames]
@@ -416,6 +422,17 @@ class star:
         # writergif = animation.PillowWriter(fps=30)
         # anim.save('Pulsation.gif',writer=writergif)
         # display(HTML(anim.to_html5_video()))
+
+    
+    def plot(var1, var2):
+        plt.figure(figsize=(10, 5))
+        plt.plot(var1, var2, lw=2, alpha = 1)
+        plt.scatter(var1, var2, color = 'black', alpha = 0.5, s = 20)
+        plt.title("Integrated Flux over Time of Random Pulsation")
+        #plt.xlim(0,1)
+        plt.xlabel("Time [s]", fontsize=20)
+        plt.ylabel("Flux [normalized]", fontsize=20)
+        plt.show()
 
 
 
