@@ -21,7 +21,6 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from IPython.display import HTML
-import lightkurve as lk
 from tqdm import tqdm
 from PIL import Image
 import warnings
@@ -375,10 +374,18 @@ class star:
             im = ax.imshow(render, cmap="seismic_r", animated=True, vmin = vmid-vRange, vmax = vmid+vRange, origin = "lower")
             imList.append([im])
 
-        anim = animation.ArtistAnimation(fig, imList, interval = 50, blit=True)
-        writergif = animation.PillowWriter(fps=30)
-        #anim.save('Pulsation.gif',writer=writergif)
-        display(HTML(anim.to_html5_video()))
+        anim = animation.ArtistAnimation(fig, imList, interval=int(((time[1]-time[0])*50)), blit=True)
+        # writergif = animation.PillowWriter(fps=30)
+        # gif = anim.save('Pulsation.gif',writer=writergif)
+        display(HTML(anim.to_jshtml()))
+        plt.close(fig)
+
+        # video = anim.to_html5_video() 
+        # # embedding for the video 
+        # html = display.HTML(video) 
+        # # draw the animation 
+        # display(html)
+        # #plt.show()
 
     def visualizeBinary(self, time):
         fig = plt.figure(figsize=(5,5))
@@ -418,16 +425,19 @@ class star:
 
         newFrames[0].save("Binary.gif", format="GIF", append_images=newFrames, save_all=True, duration = 50, loop=0)
 
+        anim = animation.ArtistAnimation(fig, newFrames, interval=50, blit=True)
+        display(HTML(anim.to_jshtml()))
+
         # anim = animation.ArtistAnimation(fig, frames, interval = 50, blit=True)
         # writergif = animation.PillowWriter(fps=30)
         # anim.save('Pulsation.gif',writer=writergif)
         # display(HTML(anim.to_html5_video()))
 
     
-    def plot(var1, var2):
+    def plot(self,var1,var2):
         plt.figure(figsize=(10, 5))
         plt.plot(var1, var2, lw=2, alpha = 1)
-        plt.scatter(var1, var2, color = 'black', alpha = 0.5, s = 20)
+        plt.scatter(var1, var2, color = 'black', alpha = 0.25, s = 10)
         plt.title("Integrated Flux over Time of Random Pulsation")
         #plt.xlim(0,1)
         plt.xlabel("Time [s]", fontsize=20)
