@@ -19,6 +19,7 @@ import numpy as np
 import math as m
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import matplotlib.image as img
 import matplotlib.animation as animation
 from IPython.display import HTML
 from tqdm import tqdm
@@ -58,8 +59,8 @@ def _LxMx(t, m, frequency=1,amp=1, phase0=0):
     ### Example
     
     """
-    posCoeff = amp*np.cos(2*np.pi*(frequency*(t+phase0)))
-    negCoeff = -np.sign(m) * amp*np.sin(2*np.pi*(frequency*(t+phase0)))
+    posCoeff = amp*np.cos(2*np.pi*((frequency*t)+phase0))
+    negCoeff = -np.sign(m) * amp*np.sin(2*np.pi*((frequency*t)+phase0))
     return posCoeff, negCoeff
 
 #Star class object to function as source for stellar pulsation
@@ -170,8 +171,12 @@ class star:
                 self.ampScaleFactor[i] = 1.0/maxAmp
                 if(self.ampScaleFactor[i] > 1.0):
                     warnings.warn("WARNING: Producing unphysical amplitude values!")
-                    
-            self._phaseOffsetArray[i] = (timeSample[np.argmax(testFluxArray)]-0.25)
+                    self.unphysical = True
+
+            if timeSample[np.argmax(testFluxArray)] != 0:
+                self._phaseOffsetArray[i] = (timeSample[np.argmax(testFluxArray)]-0.25)
+            else:
+                self._phaseOffsetArray[i] = 0.75
 
     #Transform constructed stellar surface map to new values in accordance with input transform function
     def setTransFcn(self, fcn):
@@ -234,7 +239,17 @@ class star:
 
         return coeffArray
     
-    def show(self, time=0, cmap="seismic_r", **kwargs):
+    def show(self, time=0.0, cmap="seismic_r", **kwargs):
+        """Display surface map of constructed pulsating star at given time
+        ### Parameters
+
+        time: array_like (float, 1D)
+            Time at which to construct the surface map
+
+        ### Example
+        
+        """
+        
         coeffArray = self.computePulsation(time)
         self._map.y[:] = coeffArray
         self._map.show(grid = False, cmap=cmap, **kwargs)
@@ -320,7 +335,7 @@ class star:
         _ = self.sys.flux(0)
 
 
-    def visualizeStar(self, time):
+    def visualizeStar(self, startTime, endTime, timeStep=None):
         """Construct animated gif visualizing star's pulsation over specific time period
 
         ### Parameters
@@ -331,15 +346,24 @@ class star:
         
         """
 
-        # Have user give start and end time, throw Nyquist warningaz7
-        if not hasattr(time, '__iter__'):
-                time = [time]
+        # SOLUTION TO FLASHING/SLOW PULSATION: Have user give start and end time, throw Nyquist warning if higher than the nyquist frequency
+        # if not hasattr(time, '__iter__'):
+        #         time = [time]
+
+        maxFreq = np.nanmax(self.freq)
+
+        if(timeStep is None):
+            step = 1.0/(maxFreq*12.0)
+        else:
+            step = timeStep
+
+        timeArray = np.arange(startTime, endTime, step)
         
-        for i,t in enumerate(time[:-1]):
-            for f in self.freq:
-                if (time[i+1]-time[i]) > 1.0/f :
-                    warnings.warn("WARNING: One or more periods skipped between timestamp frames")
-                    break
+        # for i,t in enumerate(timeArray):
+        #     for f in self.freq:
+        #         if (time[i+1]-time[i]) > 1.0/f :
+        #             warnings.warn("WARNING: One or more periods skipped between timestamp frames")
+        #             break
 
 
 
@@ -358,7 +382,7 @@ class star:
 
         # Render the surface values first
         rendered = []
-        coeffArray = self.computePulsation(time)
+        coeffArray = self.computePulsation(timeArray)
         
         for coeffs in tqdm(coeffArray):
             self._map.y[:] = coeffs
@@ -374,11 +398,15 @@ class star:
             im = ax.imshow(render, cmap="seismic_r", animated=True, vmin = vmid-vRange, vmax = vmid+vRange, origin = "lower")
             imList.append([im])
 
-        anim = animation.ArtistAnimation(fig, imList, interval=int(((time[1]-time[0])*50)), blit=True)
-        # writergif = animation.PillowWriter(fps=30)
-        # gif = anim.save('Pulsation.gif',writer=writergif)
+        #fig.colorbar(im)
+
+
+        anim = animation.ArtistAnimation(fig, imList, interval=50, blit=True)
+        writergif = animation.PillowWriter(fps=30)
+        gif = anim.save('Pulsation.gif',writer=writergif)
         display(HTML(anim.to_jshtml()))
         plt.close(fig)
+        #return(timeArray)
 
         # video = anim.to_html5_video() 
         # # embedding for the video 
@@ -387,18 +415,27 @@ class star:
         # display(html)
         # #plt.show()
 
-    def visualizeBinary(self, time):
+    def visualizeBinary(self, startTime, endTime, timeStep=None):
         fig = plt.figure(figsize=(5,5))
         ax = fig.add_subplot(1,1,1)
         ax.axis('off')
 
-        if not hasattr(time, '__iter__'):
-                time = [time]
+        # if not hasattr(time, '__iter__'):
+        #         time = [time]
 
-        coeffArray = self.computePulsation(time)
+        maxFreq = np.nanmax(self.freq)
+
+        if(timeStep is None):
+            step = 1.0/(maxFreq*12.0)
+        else:
+            step = timeStep
+
+        timeArray = np.arange(startTime, endTime, step)
+
+        coeffArray = self.computePulsation(timeArray)
 
         rendered = []
-        for coeffs in tqdm(coeffArray[:,:]):
+        for coeffs in coeffArray[:,:]:
             self._map.y[:] = coeffs
             rendered.append(self._map.render())
 
@@ -407,26 +444,35 @@ class star:
         vmid = 1.0/np.pi
         fileNames = []
         
-        for i in range(len(time)):
-            fileLength = int(np.ceil(np.log10(len(time))))
+        for i in range(len(timeArray)):
+            fileLength = int(np.ceil(np.log10(len(timeArray))))
             self.sys.primary.map.y[:] = coeffArray[i,:]
             fileNames.append(f"./BinaryImages/{i:0{fileLength}}.png")
-            self.sys.show(t=time[i], figsize=(5, 5), cmap="seismic_r", file=fileNames[i])
-
+            self.sys.show(t=timeArray[i], figsize=(5, 5), cmap="seismic_r", file=fileNames[i])
+            #Insert new function call here: modified STARRY sys.show 
         
         frames = [Image.open(fileName).convert("RGBA") for fileName in fileNames]
         newFrames = []
 
-        for frame in frames:
-            newFrame = Image.new("RGBA", frames[0].size, "WHITE")
-            newFrame.paste(frame,(0,0), frame)
-            newFrame.convert('RGB')
-            newFrames.append(newFrame)
+        for i, frame in tqdm(enumerate(frames)):
+            newFrame = Image.new(mode="RGBA", size=(frames[0].size), color="WHITE")
+            newFrame.paste(frame,(0,0))
+            #newFrame.convert('RGB')
+            newFrame.save(fileNames[i])
+            imageFrame = img.imread(fileNames[i])
+            im = ax.imshow(imageFrame, cmap="seismic_r", animated=True, vmin = vmid-vRange, vmax = vmid+vRange)
+            newFrames.append([im])
 
-        newFrames[0].save("Binary.gif", format="GIF", append_images=newFrames, save_all=True, duration = 50, loop=0)
+        #fig.colorbar(im)
+            
+        #newFrames[0].save("Binary.gif", format="GIF", append_images=newFrames, save_all=True, duration = 50, loop=0)
 
         anim = animation.ArtistAnimation(fig, newFrames, interval=50, blit=True)
         display(HTML(anim.to_jshtml()))
+        writergif = animation.PillowWriter(fps=30)
+        gif = anim.save('BinaryPulsation.gif',writer=writergif)
+        plt.close(fig)
+        #return(timeArray)
 
         # anim = animation.ArtistAnimation(fig, frames, interval = 50, blit=True)
         # writergif = animation.PillowWriter(fps=30)
@@ -438,7 +484,7 @@ class star:
         plt.figure(figsize=(10, 5))
         plt.plot(var1, var2, lw=2, alpha = 1)
         plt.scatter(var1, var2, color = 'black', alpha = 0.25, s = 10)
-        plt.title("Integrated Flux over Time of Random Pulsation")
+        #plt.title("Integrated Flux over Time of Random Pulsation")
         #plt.xlim(0,1)
         plt.xlabel("Time [s]", fontsize=20)
         plt.ylabel("Flux [normalized]", fontsize=20)
