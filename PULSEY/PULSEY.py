@@ -27,6 +27,8 @@ from tqdm import tqdm
 from PIL import Image
 import warnings
 
+%matplotlib widget
+
 # Star class object to construct stellar pulsation
 class star:
     
@@ -178,18 +180,21 @@ class star:
                 
             
     #Transform constructed stellar surface map to new values in accordance with input transform function
-    def setTransFcn(self, fcn):
+    def setTransFcn(self, fcn, osParam=2):
         """
         ### Description
         
-        Set function for transforming surface map pixel magnitudes to desired values
+        Set function for transforming surface map pixel magnitudes
 
         ### Parameters
 
         fcn : float (default = 1.0)
             Equation to transform surface magnitudes to observable values
+
         osParam: int (default = 2)
-            Degree to which surface map of star will be granulated to pixels. Higher value equals more pixels
+            Degree to which surface map of star will be granulated to pixels. Higher value equals more pixels.
+
+        ### Returns
 
         ### Example
         
@@ -230,14 +235,17 @@ class star:
         """
         ### Description
         
-        Set function for transforming surface map pixel magnitudes to desired values
+        JAX vmap function to compute surface map SH-mode coefficients for an array of time values using the star._singleMap() function
 
         ### Parameters
 
-        fcn : float (default = 1.0)
-            Equation to transform surface magnitudes to observable values
-        osParam: int (default = 2)
-            Degree to which surface map of star will be granulated to pixels. Higher value equals more pixels
+        timeArray : array-like (float)
+            Array of time values to compute surface map coefficients
+
+        ### Returns
+
+        coeffArray : array_like (float, 2D)
+            Array of surface map SH-mode coefficients at each time step
 
         ### Example
         
@@ -269,42 +277,50 @@ class star:
         """
         ### Description
         
-        Set function for transforming surface map pixel magnitudes to desired values
+        JAX vmap function to compute flux output from surface maps for an array of time values using the star._singleFlux() function
 
         ### Parameters
 
-        fcn : float (default = 1.0)
-            Equation to transform surface magnitudes to observable values
-        osParam: int (default = 2)
-            Degree to which surface map of star will be granulated to pixels. Higher value equals more pixels
+        timeArray : array-like (float)
+            Array of time values to compute fluxes
+
+        ### Returns
+
+        flux : array_like (float, 2D)
+            Array of star's output flux at each time step
 
         ### Example
         
         """
-        f = jax.vmap(self._singleFlux)(timeArray)
-        return f
-
-    # Calculate the coefficients for the surface map of the primary star in a binary system at a given time value (to be used iteratively over a JAX vmap function)
-    def binaryFlux(self, time):
-        
-        newCoeffs = self.computePulsation(time)
-        self.system.central_surface.y.data.update(starry.Ylm.from_dense(newCoeffs, normalize=False).data) # Applies update to actual binary system
-        flux = jx.starry.light_curves.light_curve(self.system)
-        return flux(time)[0]
+        flux = jax.vmap(self._singleFlux)(timeArray)
+        return flux
     
     # Initialize star into binary system with default values and execute JAX vmap function to iterate computeBinary() over an array of time values
-    def computeBinary(self, timeArray, m1=1.0, r1=1.0, m2=0.5, r2=0.5, period=1.0, tTransit=1.0):
-        """
-        ### Description
-        
-        Set function for transforming surface map pixel magnitudes to desired values
+    def insertBinary(self, m1=1.0, r1=1.0, m2=1.0, r2=1.0, period=1.0, tTransit=0.0):
+         
+        """Inserts star within binary system with given paramater inputs
 
         ### Parameters
 
-        fcn : float (default = 1.0)
-            Equation to transform surface magnitudes to observable values
-        osParam: int (default = 2)
-            Degree to which surface map of star will be granulated to pixels. Higher value equals more pixels
+        m1 : float (default = 1.0)
+            Mass of primary star
+
+        r1 : float (default = 1.0)
+            Radius of primary star
+
+        m2 : float (default = 1.0)
+            Mass of secondary star
+
+        r2 : float (default = 1.0)
+            Radius of secondary star
+
+        period : float (default = 1.0)
+            Orbital period of binary system
+
+        tTransit : float (default = 0.0)
+            Time of eclipse occultation transit
+        
+        ### Returns
 
         ### Example
         
@@ -314,6 +330,53 @@ class star:
         self.system = starry.orbit.SurfaceSystem(central=central, central_surface=self._map)
         self.system = self.system.add_body(secondary)
 
+        return "Star inserted into binary system."
+    
+    # Calculate the coefficients for the surface map of the primary star in a binary system at a given time value (to be used iteratively over a JAX vmap function)
+    def binaryFlux(self, time=0.0):
+        """
+        ### Description
+        
+        Compute flux output from star in eclipsing binary for a single time value
+
+        ### Parameters
+
+        time : float (default = 0.0)
+            Array of time values to compute fluxes
+
+        ### Returns
+
+        flux : float
+            Star's output flux at a single time step
+
+        ### Example
+        
+        """
+        newCoeffs = self.computePulsation(time)
+        self.system.central_surface.y.data.update(starry.Ylm.from_dense(newCoeffs, normalize=False).data) # Applies update to actual binary system
+        flux = jx.starry.light_curves.light_curve(self.system)
+        return flux(time)[0]
+    
+    # JAX vmap function to iterate binaryFlux() over an array of time values
+    def computeBinary(self, timeArray):
+        """
+        ### Description
+        
+        JAX vmap function to compute flux output from star in eclipsing binary for an array of time values using the star.binaryFlux() function
+
+        ### Parameters
+
+        timeArray : array-like (float)
+            Array of time values to compute fluxes
+
+        ### Returns
+
+        flux : array_like (float, 2D)
+            Array of star's output flux at each time step
+
+        ### Example
+        
+        """
         flux = jax.vmap(self.binaryFlux)(timeArray)
         return flux
 
@@ -326,8 +389,14 @@ class star:
 
         ### Parameters
 
-        time: array_like (float, 1D)
+        time : float (default = 0.0)
             Time at which to construct the surface map
+
+        phase : float (default = 0.0)
+            Phase at which to evaluate the surface map
+
+        cmap : string (default = 'seismic_r')
+            Color map to fill in visualized star plot
 
         ### Example
         
@@ -339,6 +408,22 @@ class star:
 
     # Plot graph relating two parameters of star object
     def plot(self,var1,var2):
+        """
+        ### Description
+
+        Plot relating two parameters of star object
+
+        ### Parameters
+
+        var1 : array_like (float, int)
+            Time at which to construct the surface map
+
+        var2 : array_like (float, int)
+            Phase at which to evaluate the surface map
+
+        ### Example
+        
+        """
         plt.figure(figsize=(10, 5))
         plt.plot(var1, var2, lw=2, alpha = 1)
         plt.scatter(var1, var2, color = 'black', alpha = 0.25, s = 10)
@@ -347,3 +432,60 @@ class star:
         plt.xlabel("Time [s]", fontsize=20)
         plt.ylabel("Flux [normalized]", fontsize=20)
         plt.show()
+
+    # Create animation to visualize pulsation flux variablities of star
+    def Animate(self, timeArray):
+        
+        imList = []
+        renders = jax.vmap(self.visualizeStar)(timeArray)
+        flatR = jnp.array(renders).flatten() 
+        vRange = jnp.nanmax(jnp.abs(flatR - 1/jnp.pi))
+        vmid = 1.0/jnp.pi
+
+        # for render in tqdm(renders):
+        #     im = ax.imshow(render, cmap="seismic_r", animated=True, vmin = vmid-vRange, vmax = vmid+vRange, origin = "lower")
+        #     imList.append([im])
+
+        # anim = animation.ArtistAnimation(fig, imList, interval=50, blit=True)
+        # writergif = animation.PillowWriter(fps=30)
+        # gif = anim.save('Pulsation.gif',writer=writergif)
+        # display(HTML(anim.to_jshtml()))
+        # plt.close(fig)
+        #plt.close(fig)
+        #return(timeArray)
+
+# Function to determine postition of given spherical harmonic mode coefficient in Ylm array
+def lmIndex(l, m):
+    return (l**2 + l) + m
+
+#Function to calculate coefficients to construct standing wave pulsation from combining +/- m-modes
+def _LxMx(t, m, frequency=1,amp=1, phase0=0):
+    """Construct pulsation coefficients of a single l-m spherical harmonic mode
+
+    ### Parameters
+
+    t : array_like (int, float)
+        Array of time values of periodic pulsation
+    m : int
+        M-mode value to calculate sign direction of pulsation
+    frequency : float (default = 1.0)
+        Frequency of sinusoidal pulsation
+    amp : float (deafault = 1.0)
+        Amplitude of pulsation mode
+    phase0 : float (default = 0.0)
+        Phase offset of sinusoidal pulsation
+    
+    ### Returns
+
+    posCoeff : float
+        Positive coefficient of single L-M mode spherical harmonic pulsation
+
+    negCoeff : float
+        Negative coefficient of single L-M mode spherical harmonic pulsation
+
+    ### Example
+    
+    """
+    posCoeff = amp * jnp.cos(2*jnp.pi* ((frequency*t) +phase0))
+    negCoeff = -jnp.sign(m) * amp * jnp.sin(2*jnp.pi* ((frequency*t) +phase0))
+    return posCoeff, negCoeff
