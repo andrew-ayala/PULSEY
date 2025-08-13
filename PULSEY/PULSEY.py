@@ -27,8 +27,6 @@ from tqdm import tqdm
 from PIL import Image
 import warnings
 
-%matplotlib widget
-
 # Star class object to construct stellar pulsation
 class star:
     
@@ -352,7 +350,7 @@ class star:
         ### Example
         
         """
-        newCoeffs = self.computePulsation(time)
+        newCoeffs = self._singleMap(time)
         self.system.central_surface.y.data.update(starry.Ylm.from_dense(newCoeffs, normalize=False).data) # Applies update to actual binary system
         flux = jx.starry.light_curves.light_curve(self.system)
         return flux(time)[0]
@@ -435,24 +433,49 @@ class star:
 
     # Create animation to visualize pulsation flux variablities of star
     def Animate(self, timeArray):
+    
+        # Render the surface values first
+        coeffArray = self.computeMap(timeArray)
         
-        imList = []
-        renders = jax.vmap(self.visualizeStar)(timeArray)
-        flatR = jnp.array(renders).flatten() 
-        vRange = jnp.nanmax(jnp.abs(flatR - 1/jnp.pi))
-        vmid = 1.0/jnp.pi
+        def render(coeffs):
+            self._map.y.data.update(starry.Ylm.from_dense(coeffs, normalize=False).data)
+            return self._map.render()
 
-        # for render in tqdm(renders):
-        #     im = ax.imshow(render, cmap="seismic_r", animated=True, vmin = vmid-vRange, vmax = vmid+vRange, origin = "lower")
-        #     imList.append([im])
+
+        rendered = jax.vmap(render)(coeffArray)
+
+        #Find most extreme surface brightness excursions for color bar
+        vRange = np.nanmax(np.abs(np.array(rendered).flatten() - 1/np.pi))
+        vmid = 1.0/np.pi
+
+        fig = plt.figure(figsize=(5,5))
+        ax = fig.add_subplot(1,1,1)
+        ax.axis('off')
+        im = ax.imshow(rendered[0], cmap="seismic_r", animated=True, vmin = vmid-vRange, vmax = vmid+vRange, origin = "lower")
+
+        def update(frame):
+            im.set_data(rendered[frame])
+            return [im]
+
+        anim = animation.FuncAnimation(fig, func=update, frames=len(rendered), interval=50,blit=True)
+        writergif = animation.PillowWriter(fps=30)
+        gif = anim.save('Pulsation.gif',writer=writergif)
+        display(HTML(anim.to_jshtml()))
+        plt.close(fig)
 
         # anim = animation.ArtistAnimation(fig, imList, interval=50, blit=True)
         # writergif = animation.PillowWriter(fps=30)
         # gif = anim.save('Pulsation.gif',writer=writergif)
         # display(HTML(anim.to_jshtml()))
         # plt.close(fig)
-        #plt.close(fig)
         #return(timeArray)
+
+        # video = anim.to_html5_video() 
+        # # embedding for the video 
+        # html = display.HTML(video) 
+        # # draw the animation 
+        # display(html)
+        # #plt.show()
 
 # Function to determine postition of given spherical harmonic mode coefficient in Ylm array
 def lmIndex(l, m):
@@ -489,3 +512,6 @@ def _LxMx(t, m, frequency=1,amp=1, phase0=0):
     posCoeff = amp * jnp.cos(2*jnp.pi* ((frequency*t) +phase0))
     negCoeff = -jnp.sign(m) * amp * jnp.sin(2*jnp.pi* ((frequency*t) +phase0))
     return posCoeff, negCoeff
+
+    #####################################################################################################################################
+
