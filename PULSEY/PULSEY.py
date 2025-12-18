@@ -13,6 +13,7 @@ import sys
 import os
 import numpy as np
 import jax
+jax.config.update("jax_enable_x64", True)
 from jax import numpy as jnp
 import jaxoplanet as jx
 import jaxoplanet.starry as starry
@@ -26,6 +27,7 @@ from IPython.display import HTML
 from tqdm import tqdm
 from PIL import Image
 import warnings
+import s2fft
 
 # Star class object to construct stellar pulsation
 class star:
@@ -68,7 +70,7 @@ class star:
     """
 
     # Initialization function accepting arguments of freq, amp, etc. to initialize star with features
-    def __init__(self, lmModes, freq, amp, phase, inc=90, obl = 0.0, lMax = None, fcn = None, osParam = 2, observed = True):
+    def __init__(self, lmModes, freq, amp, phase, inc=90, obl=0.0, lMax = None, fcn = None, osParam = 2, observed = True):
         
         # Initialize all self attributes to input/default values
         self.lmModes = np.array(lmModes)
@@ -117,6 +119,8 @@ class star:
 
         # Calculation function to recalibrate the Ylm data to appropriate amplitudes and phases as indicated by user
         self._pulsationCorrections()
+        initCoeffs = self._singleMap(0.0)
+        self._map.y.data.update(starry.Ylm.from_dense(initCoeffs, normalize=False).data)
 
         # Determine whether to apply a transform function to output surface map flux values as indicated by user
         if self.fcn is not None:
@@ -178,26 +182,27 @@ class star:
                 
             
     #Transform constructed stellar surface map to new values in accordance with input transform function
-    def setTransFcn(self, fcn, osParam=2):
-        """
-        ### Description
+    # def setTransFcn(self, fcn, osParam=2):
+    #     """
+    #     ### Description
         
-        Set function for transforming surface map pixel magnitudes
+    #     Set function for transforming surface map pixel magnitudes
 
-        ### Parameters
+    #     ### Parameters
 
-        fcn : float (default = 1.0)
-            Equation to transform surface magnitudes to observable values
+    #     fcn : float (default = 1.0)
+    #         Equation to transform surface magnitudes to observable values
 
-        osParam: int (default = 2)
-            Degree to which surface map of star will be granulated to pixels. Higher value equals more pixels.
+    #     osParam: int (default = 2)
+    #         Degree to which surface map of star will be granulated to pixels. Higher value equals more pixels.
 
-        ### Returns
+    #     ### Returns
 
-        ### Example
+    #     ### Example
         
-        """
-        self.fcn = fcn
+    #     """
+
+    #     self.fcn = fcn
         
     # Computation of SH-mode amplitude value according to mode frequency. Outputs pulsation flux output at a single input time (to be used iteratively over a JAX vmap function)
     def _singleMap(self, time):
@@ -215,17 +220,16 @@ class star:
         N = negC
 
         # Apply coefficients to their respective value postions in the array to be administered to the final surface map of star
-        for i in m:
-            coeffArray = coeffArray.at[lmIndex(l[:], np.abs(m[:]))].add(P[:])
-            if i != 0:
-                coeffArray = coeffArray.at[lmIndex(l[:],-np.abs(m[:]))].add(N[:])
+        #for i in m:
+        coeffArray = coeffArray.at[lmIndex(l[:], np.abs(m[:]))].add(P[:])
+            #if i != 0:
+        coeffArray = coeffArray.at[lmIndex(l[:],-np.abs(m[:]))].add(N[:])
 
         ### TESTING: apply function to coefficient values
         # if self.fcn is not None:
         #     p = self.Y2P.dot(coeffArray[:,:])
         #     newP = self.fcn(p)
         #     coeffArray[:,:] = self.P2Y.dot(newP)
-
         return coeffArray
     
     # JAX vmap function to iterate computePulsation() over an array of time values
@@ -379,7 +383,7 @@ class star:
         return flux
 
     # Show visual representation of star object
-    def show(self, time=0.0, phase=0.0, cmap="seismic_r", **kwargs):
+    def show(self, time=None, inc=None, obl=None, phase=0.0, cmap="seismic_r", **kwargs):
         """
         ### Description
 
@@ -399,10 +403,17 @@ class star:
         ### Example
         
         """
-        fig1, ax1 = plt.subplots(figsize=(4.25, 4.25))  
-        coeffArray = self._singleMap(time)
-        self._map.y.data.update(starry.Ylm.from_dense(coeffArray, normalize=False).data)
-        starry.visualization.show_surface(self._map, cmap = cmap, ax=ax1)
+        fig1, ax1 = plt.subplots(figsize=(4.25, 4.25)) 
+        if(time==None):
+            self.inc = inc
+            self.obl = obl
+            starry.visualization.show_surface(self._map, cmap = cmap, ax=ax1)
+        else:
+            coeffArray = self._singleMap(time)
+            self.inc = inc
+            self.obl = obl
+            self._map.y.data.update(starry.Ylm.from_dense(coeffArray, normalize=False).data)
+            starry.visualization.show_surface(self._map, cmap = cmap, ax=ax1)
 
     # Plot graph relating two parameters of star object
     def plot(self,var1,var2):
@@ -456,6 +467,10 @@ class star:
         def update(frame):
             im.set_data(rendered[frame])
             return [im]
+        
+        if len(rendered) > 1500:
+            warnings.warn("WARNING: Animation too long. Will limit animation")
+            rendered = rendered[:1500]
 
         anim = animation.FuncAnimation(fig, func=update, frames=len(rendered), interval=50,blit=True)
         writergif = animation.PillowWriter(fps=30)
