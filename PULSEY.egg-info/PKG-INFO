@@ -1,0 +1,20 @@
+Metadata-Version: 2.4
+Name: PULSEY
+Version: 0.0.8
+Summary: Stellar Pulsation Package
+Author-email: Andrew Ayala <andrew.ayala.2018@gmail.com>
+Project-URL: Homepage, https://github.com/andrew-ayala/PULSEY
+Project-URL: Issues, https://github.com/andrew-ayala/PULSEY/issues
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.0
+Description-Content-Type: text/markdown
+Requires-Dist: jax
+Requires-Dist: numpy
+Requires-Dist: jaxoplanet
+Requires-Dist: numpy
+
+# PULSEY
+
+A python package for modeling stellar pulsation. Now updated with JAX and JAXoplanet implementation.

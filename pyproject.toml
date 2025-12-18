@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "PULSEY"
+version = "0.0.8"
+dependencies = [
+        "jax",
+        "numpy",
+        "jaxoplanet",
+        "numpy",
+    ]
+authors = [
+  { name="Andrew Ayala", email="andrew.ayala.2018@gmail.com" },
+]
+description = "Stellar Pulsation Package"
+readme = "README.md"
+requires-python = ">=3.0"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/andrew-ayala/PULSEY"
+Issues = "https://github.com/andrew-ayala/PULSEY/issues"
