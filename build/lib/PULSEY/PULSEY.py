@@ -1,519 +1,681 @@
-#Decription:
-"""
-This package creates simulations of periodic non-radial stellar pulsation.  These pulsations are either driven waves that propogate across the surface of a 
-star due to pressure and/or gravitational gradients, known as p-mode and g-mode waves respectively. These pulsation waves can be modeled by oscillating
-spherical harmonics.  Using the "STARRY" python package one can model differential magnitudes of a spherical surface. However, there 
-are no methods within this package enabling these surfaces to evolve or vary over time-- or in another word, pulsate. This program
-utilizes these static maps to create a periodically pulsating stellar source by summing various spherical harmonic magnitude values
-over time.  
+"""Tools for simulating non-radial stellar pulsations with STARRY maps.
+
+PULSEY represents a pulsating stellar photosphere as a time-dependent sum of
+real spherical harmonic coefficients. Each pulsation mode is described by an
+``(l, m)`` pair, a frequency, an amplitude, and an initial phase. The class
+below translates those user-facing mode properties into the coefficient vector
+expected by :mod:`jaxoplanet.starry`, then evaluates either disk-integrated
+light curves or local surface intensities.
 """
 
-### IMPORT PACKAGES ###
+### Package imports ###
 import sys
 import os
-import starry
-starry.config.lazy = False
-starry.config.quiet = True
-
 import numpy as np
+import jax
+
+jax.config.update("jax_enable_x64", True)
+
+from jax import numpy as jnp
+import jaxoplanet as jx
+import jaxoplanet.starry as starry
+from jaxoplanet.starry.light_curves import surface_light_curve
 import math as m
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.image as img
 import matplotlib.animation as animation
-from IPython.display import HTML
+from IPython.display import HTML, display
 from tqdm import tqdm
 from PIL import Image
 import warnings
 
-### Calculate position in CoeffArray of given L,M index
-#Function to determine postition of desire spherical harmonic mode coefficient in L-M array
-def lmIndex(l, m):
-    return l*(l+1) + m
+# ``s2fft`` is useful for future spherical-harmonic transforms, but PULSEY's
+# current public methods do not require it. Keep it optional so users without
+# the compiled backend can still import the package and compute pulsations.
+try:
+    import s2fft
+except ImportError:
+    s2fft = None
 
-#Function to calculate coefficients to construct standing wave pulsation from combining +/- m-modes
-def _LxMx(t, m, frequency=1,amp=1, phase0=0):
-    """Construct pulsation coefficients of a single l-m spherical harmonic mode
 
-    ### Parameters
+def _as_mode_array(values, n_modes, name):
+    """Return a one-dimensional float array with one value per pulsation mode.
 
-    t : array_like (int, float)
-        Array of time values of periodic pulsation
-    m : int
-        M-mode value to calculate sign direction of pulsation
-    frequency : float (default = 1.0)
-        Frequency of sinusoidal pulsation
-    amp : float (deafault = 1.0)
-        Amplitude of pulsation mode
-    phase0 : float (default = 0.0)
-        Phase offset of sinusoidal pulsation
-    
-    ### Returns
-
-    posCoeff : float
-        Positive coefficient of single L-M mode spherical harmonic pulsation
-
-    negCoeff : float
-        Negative coefficient of single L-M mode spherical harmonic pulsation
-
-    ### Example
-    
+    The public API allows users to pass scalars for one-mode stars. Internally,
+    PULSEY always uses length-``n_modes`` arrays so vectorized coefficient
+    calculations can treat every mode in the same way.
     """
-    posCoeff = amp*np.cos(2*np.pi*((frequency*t)+phase0))
-    negCoeff = -np.sign(m) * amp*np.sin(2*np.pi*((frequency*t)+phase0))
-    return posCoeff, negCoeff
+    if n_modes == 0:
+        return np.array([], dtype=float)
 
-#Star class object to function as source for stellar pulsation
+    array = np.atleast_1d(np.asarray(values, dtype=float))
+
+    # A scalar value is convenient for the common one-mode case and can also be
+    # broadcast over multiple modes when the same property should apply to all.
+    if array.size == 1 and n_modes > 1:
+        array = np.full(n_modes, array.item(), dtype=float)
+
+    if array.size != n_modes:
+        raise ValueError(
+            f"{name} must contain either one value or one value per lmModes entry "
+            f"({n_modes} expected, {array.size} received)."
+        )
+
+    return array
+
+
+# Star class object to construct stellar pulsation.
 class star:
+    """A pulsating stellar surface represented by spherical harmonics.
 
-    """Initialize STAR object to simulate stellar pulsation
+    Parameters
+    ----------
+    lmModes : array_like of int, shape ``(n_modes, 2)``
+        Degree/order pairs ``[l, m]`` for each pulsation mode.
+    freq : float or array_like of float
+        Pulsation frequencies corresponding to ``lmModes``.
+    amp : float or array_like of float
+        Pulsation amplitudes corresponding to ``lmModes``.
+    phase : float or array_like of float
+        Initial phases, expressed in cycles from 0 to 1.
+    inc : float, default=90
+        Inclination angle in degrees.
+    obl : float, default=0.0
+        Obliquity angle in degrees.
+    lMax : int, optional
+        Maximum spherical harmonic degree to include. Defaults to the largest
+        ``l`` value in ``lmModes``.
+    fcn : callable, optional
+        Optional transform applied to sampled surface intensities.
+    osParam : int, default=2
+        Stored oversampling parameter for transform functions.
+    observed : bool, default=True
+        If true, mode amplitudes are interpreted as observed disk-integrated
+        amplitudes and are rescaled onto the intrinsic map coefficients.
 
-    ### Parameters
-
-    lmMode : array_like (int, 2D)
-        Array of L-M modes of stellar pulsation
-    freq : array_like (float)
-        Pulsation frequencies of respective L-M modes in lmMode
-    amp : array_like (float)
-        Pulsation amplitudes of respective L-M modes in lmMode
-    phase : array_like (float)
-        Initial phase of L-M mode pulsations in lmMode
-    inc : float (default = 90.0)
-        Inclination of star object relative to observer
-    lMax : int (default = None)
-        Maximum L-mode complexity of star object
-    fcn : float function (default = None)
-        Set function for transforming star object surface map values
-    osParam : int (default = 2)
-        Integer to determine number of pixels produced from surface map transform
-    observed : bool (default = True)
-        Boolean flag of amplitudes being either observed values or intrinsic values
-    
-    ### Returns
-
-    star : tuple
-        Star object with pulsation modes, frequencies, and amplitudes as indicated by user
-
-    ### Example
-    
+    Notes
+    -----
+    The class name is kept lowercase for compatibility with existing notebooks.
+    New code can still instantiate it with ``p.star(...)`` after importing
+    ``PULSEY as p``.
     """
 
-    #Init function taking freq, amp, etc. to initialize star with features
-    def __init__(self, lmMode, freq, amp, phase, inc=90, obl = 0, lMax = None, fcn = None, osParam = 2, observed = True):
-        #Insert warning if fcn given and no lMax provided (make sure its large enough)
-        #See if we can change complexity (lMax) of map after initialization
-        self.lmMode = lmMode
-        self.freq = freq
-        self.amp = amp
-        self.phase = phase
+    # Initialization function accepting the mode list and mode properties.
+    def __init__(
+        self,
+        lmModes,
+        freq,
+        amp,
+        phase,
+        inc=90,
+        obl=0.0,
+        lMax=None,
+        fcn=None,
+        osParam=2,
+        observed=True,
+    ):
+        # Normalize mode inputs up front so the rest of the code can assume a
+        # two-column integer array. A single ``[l, m]`` pair is accepted.
+        self.lmModes = np.asarray(lmModes, dtype=int)
+        if self.lmModes.ndim == 1:
+            if self.lmModes.size == 0:
+                self.lmModes = self.lmModes.reshape(0, 2)
+            elif self.lmModes.size == 2:
+                self.lmModes = self.lmModes.reshape(1, 2)
+            else:
+                raise ValueError("lmModes must be empty, a single [l, m] pair, or an array of [l, m] pairs.")
+
+        if self.lmModes.ndim != 2 or self.lmModes.shape[1] != 2:
+            raise ValueError("lmModes must have shape (n_modes, 2).")
+
+        # Store one frequency, amplitude, and phase per requested mode.
+        n_modes = len(self.lmModes)
+        self.freq = _as_mode_array(freq, n_modes, "freq")
+        self.amp = _as_mode_array(amp, n_modes, "amp")
+        self.phase = _as_mode_array(phase, n_modes, "phase")
+
+        # Orientation is stored in degrees for user-facing attributes. The
+        # underlying STARRY surface receives radians below.
         self.inc = inc
         self.obl = obl
+
+        # Optional transform function and metadata. The transform is applied by
+        # ``discretizeSurface`` to local surface intensity samples.
         self.fcn = fcn
+        self.osParam = osParam
+
         self.observed = observed
-        self.nSignals = len(lmMode)
+        self.binaryFlag = False
+        self.nSignals = np.arange(n_modes)
         self.unphysical = False
-        
-        #Provided lMax means we will transform surface output values SH-maps
-        if(lMax is None):
-            if(len(lmMode) > 0):
-                self.lMax = np.max(self.lmMode)
-            else:
-                self.lMax = 0
+
+        # Determine the maximum spherical harmonic degree represented in the
+        # coefficient vector. The dense STARRY vector has indices up to lMax.
+        if lMax is None:
+            self.lMax = int(np.max(self.lmModes[:, 0])) if n_modes > 0 else 1
         else:
-            self.lMax = lMax
+            self.lMax = int(lMax)
 
+        if n_modes > 0 and self.lMax < int(np.max(self.lmModes[:, 0])):
+            raise ValueError("lMax must be at least as large as the largest l value in lmModes.")
 
-        self._map = starry.Map(ydeg=self.lMax, amp=1.0, inc = self.inc + 90, obl = self.obl)
-        #Look into creating inclination function
+        # Build a complete Ylm coefficient dictionary through lMax. The radial
+        # (0, 0) term is initialized to 1 so the unperturbed surface has unit
+        # disk-integrated flux.
+        y_data = {(0, 0): 1.0}
+        for ell in range(1, self.lMax + 1):
+            for order in range(-ell, ell + 1):
+                y_data[(ell, order)] = 0.0
+        y = starry.ylm.Ylm(data=y_data)
 
-        #Calculate
+        # STARRY uses radians. The historical PULSEY convention offsets the
+        # inclination by 90 degrees before giving it to the surface map.
+        self._map = starry.surface.Surface(
+            y=y,
+            inc=(self.inc + 90.0) * np.pi / 180.0,
+            obl=self.obl * np.pi / 180.0,
+        )
+
+        # Keep a SurfaceSystem available even for isolated stars so binary
+        # insertion can update the same object graph.
+        self.system = starry.orbit.SurfaceSystem(
+            central=jx.orbits.keplerian.Central(mass=1.0, radius=1.0),
+            central_surface=self._map,
+        )
+
+        # Calibrate user amplitudes/phases and initialize the map at time zero.
         self._pulsationCorrections()
-        #self.computeMapCoeffs()
-        #self.computePulsation([0])
+        initCoeffs = self._singleMap(0.0)
+        self._map.y.data.update(starry.ylm.Ylm.from_dense(initCoeffs, normalize=False).data)
 
         if self.fcn is not None:
             self.setTransFcn(self.fcn, osParam)
-            self.lat, self.lon, self.Y2P, self.P2Y, self.Dx, self.Dy = self._map.get_pixel_transforms(oversample=osParam)
 
+    def setTransFcn(self, fcn, osParam=2):
+        """Store a surface-intensity transform function.
 
-    #Perform coefficient transform to retrieve necessary input amplitude map values in order to receive desired output amplitudes
-    def _pulsationCorrections(self):
-        """Compute the amplitude coefficients for converting map values to desired observables
-
-        ### Parameters
-
-        ### Example
-        Add example
+        Parameters
+        ----------
+        fcn : callable
+            Function applied to local surface intensity samples returned by
+            :meth:`discretizeSurface`.
+        osParam : int, default=2
+            Oversampling metadata retained for compatibility with older PULSEY
+            notebooks that passed this value during initialization.
         """
-        # DESIRED amplitudes set to ampScaleFactor, transform if observed flag is true
-        self.ampScaleFactor = np.ones(self.nSignals)
-        self._phaseOffsetArray = np.zeros(self.nSignals)
-
-        #Sample map over arbitrary time to retrieve necessary amplitudes and phase to combine for constructing desired surfacd map
-        for i in range(len(self.lmMode)):
-            timeSample = np.arange(0.0,1.0,0.25)
-            testFluxArray = np.zeros(len(timeSample))
-            for j, t in enumerate(timeSample):
-                self._map.y[1:] = 0.0
-                l = self.lmMode[i][0]
-                m = self.lmMode[i][1]
-                posC,negC = _LxMx(t, m, frequency=1.0, amp=1.0, phase0=0)
-                self._map[l,np.abs(m)]  += posC
-                if m != 0:
-                    self._map[l,-np.abs(m)] += negC
-
-                testFluxArray[j] = self._map.flux()
-
-            #Save amp and phase coefficients for use in map construction
-            maxAmp = np.nanmax(testFluxArray)
-            maxAmp = maxAmp-1.0
-            if self.observed:
-                self.ampScaleFactor[i] = 1.0/maxAmp
-                if(self.ampScaleFactor[i]*self.amp[i] > 1.0):
-                    warnings.warn("WARNING: Producing unphysical amplitude values!")
-                    self.unphysical = True
-
-            
-            phaseVal = timeSample[np.argmax(testFluxArray)]
-            if l==1 and m==0:
-                self._phaseOffsetArray[i] = 0.75
-            elif phaseVal > 0.0:
-                self._phaseOffsetArray[i] = (timeSample[np.argmax(testFluxArray)]-0.25)
-            else:
-                 self._phaseOffsetArray[i] = 0.25
-
-    #Transform constructed stellar surface map to new values in accordance with input transform function
-    def setTransFcn(self, fcn):
-        """Set function for transforming surface map pixel magnitudes to desired values
-
-        ### Parameters
-
-        fcn : float (default = 1.0)
-            Equation to transform surface magnitudes to observable values
-        osParam: int (default = 2)
-            Degree to which surface map of star will be granulated to pixels. Higher value equals more pixels
-
-        ### Example
-        
-        """
-
-        #Translate lons/lats due to inclination of star
         self.fcn = fcn
-        
-        # self.lat = self.lat-self.inc
+        self.osParam = osParam
 
+    # Calibration of spherical harmonic mode amplitude and phase coefficients
+    # to desired output values. Pulsation simulation of non-axisymmetric modes
+    # is done by combining positive and negative m components at offset phases.
+    def _pulsationCorrections(self):
+        """Compute per-mode amplitude scale factors and phase offsets."""
+        self.ampScaleFactor = np.ones(len(self.nSignals))
+        self._phaseOffsetArray = np.zeros(len(self.nSignals))
 
-    #Compute coefficients necessary to construct surface maps for pulsation over given time sample
-    def computePulsation(self, time):
-        """Construct surface maps for every timestamp in the given time period
+        # Nothing needs calibration when the user requests a static surface.
+        if len(self.nSignals) == 0:
+            return
 
-        ### Parameters
+        # Evaluate each requested mode at quarter-phase intervals. These samples
+        # let PULSEY infer how an intrinsic coefficient maps onto the observed
+        # disk-integrated amplitude at the current inclination.
+        for i in range(len(self.lmModes)):
+            timeSample = np.arange(0.0, 1.0, 0.25)
+            testFluxArray = np.zeros(len(timeSample))
 
-        timeArray : array_like (float, 1D)
-            Time values over which to construct surface maps
+            ell = self.lmModes[i][0]
+            order = self.lmModes[i][1]
 
-        ### Example
-        
-        """
+            # Reset the map to the unperturbed state before measuring the
+            # response of the single mode under consideration.
+            for key in self._map.y.data:
+                self._map.y.data[key] = 0.0
+            self._map.y.data.update({(0, 0): 1.0})
 
-        #Remove saving pos/neg Coeffs to self._map.  Store directly in self.coeffArray
+            for j, t in enumerate(timeSample):
+                posC, negC = _LxMx(t, order, frequency=1.0, amp=1.0, phase0=0.0)
+                self._map.y.data.update({(ell, np.abs(order)): posC})
+                if order != 0:
+                    self._map.y.data.update({(ell, -np.abs(order)): negC})
 
-        if not hasattr(time, '__iter__'):
-            time = [time]
-        
-        coeffArray = np.zeros((len(time),len(self._map.y)))
-        coeffArray[:,0] = 1.0
-        for i,t in enumerate(time):
-            for j in range(self.nSignals):
-                    l = self.lmMode[j][0]
-                    m = self.lmMode[j][1]
-                    posC,negC = _LxMx(t, m, frequency=self.freq[j],amp=self.amp[j]*self.ampScaleFactor[j], 
-                                        phase0=self.phase[j]+self._phaseOffsetArray[j])
-                    
-                    #print(posC)
+                # Store the disk-integrated flux for this pure mode sample.
+                flux = surface_light_curve(self._map)
+                testFluxArray[j] = np.asarray(flux)
 
-                    coeffArray[i,lmIndex(l, np.abs(m))] += posC
-                    if m != 0:
-                        coeffArray[i,lmIndex(l,-np.abs(m))] += negC
+            # If amplitudes are specified as observed light-curve amplitudes,
+            # convert them back into the intrinsic coefficient scale required by
+            # the surface map. Pole-on or cancellation-heavy modes may have a
+            # near-zero response, so keep their intrinsic scale unchanged.
+            if self.observed:
+                maxAmp = np.nanmax(testFluxArray) - 1.0
+                if np.isclose(maxAmp, 0.0):
+                    warnings.warn(
+                        f"Mode ({ell}, {order}) has near-zero observed amplitude at this orientation; "
+                        "leaving its intrinsic amplitude scale unchanged."
+                    )
+                    self.ampScaleFactor[i] = 1.0
+                else:
+                    self.ampScaleFactor[i] = 1.0 / maxAmp
 
-            if self.fcn is not None:
-                p = self.Y2P.dot(coeffArray[i,:])
-                newP = self.fcn(p)
-                coeffArray[i,:] = self.P2Y.dot(newP)
+            # Shift the user phase so phase zero starts at the average flux
+            # point immediately before the maximum.
+            if timeSample[np.argmax(testFluxArray)] != 0:
+                self._phaseOffsetArray[i] = timeSample[np.argmax(testFluxArray)] - 0.25
+            else:
+                self._phaseOffsetArray[i] = 0.75
+
+    # Computation of spherical harmonic coefficient values at a single time.
+    # This helper is vectorized by ``computeMap`` for arrays of times.
+    def _singleMap(self, time):
+        """Return the dense Ylm coefficient vector at a single time."""
+        coeffArray = jnp.zeros(lmIndex(self.lMax, self.lMax) + 1)
+        coeffArray = coeffArray.at[0].set(1.0)
+
+        if len(self.lmModes) == 0:
+            return coeffArray
+
+        ell = self.lmModes[:, 0]
+        order = self.lmModes[:, 1]
+
+        # Convert user mode properties into cosine/sine coefficient pairs. The
+        # positive-m term stores the cosine component; the negative-m term
+        # stores the sine component that sets the direction of the standing wave.
+        posC, negC = _LxMx(
+            time,
+            order,
+            frequency=self.freq[:],
+            amp=self.amp[:] * self.ampScaleFactor[:],
+            phase0=self.phase[:] + self._phaseOffsetArray[:],
+        )
+
+        # Add all mode contributions into the dense STARRY coefficient vector.
+        # Repeated modes are intentionally summed.
+        coeffArray = coeffArray.at[lmIndex(ell[:], np.abs(order[:]))].add(posC[:])
+        coeffArray = coeffArray.at[lmIndex(ell[:], -np.abs(order[:]))].add(negC[:])
 
         return coeffArray
-    
-    def show(self, time=0.0, cmap="seismic_r", **kwargs):
-        """Display surface map of constructed pulsating star at given time
-        ### Parameters
 
-        time: array_like (float, 1D)
-            Time at which to construct the surface map
+    def _surfaceFromCoeffs(self, coeffArray):
+        """Build an isolated STARRY surface from a coefficient vector.
 
-        ### Example
-        
+        This avoids mutating ``self._map`` when sampling local intensities, which
+        is useful for evaluating many times or coordinates in a row.
         """
-        
-        coeffArray = self.computePulsation(time)
-        self._map.y[:] = coeffArray
-        self._map.show(grid = False, cmap=cmap, **kwargs)
+        return starry.surface.Surface(
+            y=starry.ylm.Ylm.from_dense(coeffArray, normalize=False),
+            inc=self._map._inc,
+            obl=self._map._obl,
+            u=self._map.u,
+            period=self._map.period,
+            amplitude=self._map.amplitude,
+            normalize=False,
+            phase=self._map.phase,
+            radius=self._map.radius,
+            shear=self._map.shear,
+        )
 
+    # JAX vmap function to iterate _singleMap over an array of time values.
+    def computeMap(self, timeArray):
+        """Compute surface-map coefficients for an array of time values.
 
-    #Calculate flux of surface map pulsation over given time sample (time Array given HERE)
-    def computeFlux(self, time, binaryIndicator=False):
-        """Compute output flux of star object over input time array and save as feature of star
+        Parameters
+        ----------
+        timeArray : array_like of float
+            Time values at which to evaluate the pulsation state.
 
-        ### Parameters
-
-        timeArray : array_like (float, 1D)
-            Time values over which to construct surface maps
-
-        binaryIndicator : boolean (deafault = False)
-            Flag indicating whether star is in binary system
-        
-        
-        ### Returns
-
-        fluxArray : array_like (float, 1D)
-            Integrated disc flux values of star at each value of timeArray 
-
-        ### Example
-        
+        Returns
+        -------
+        array_like
+            Two-dimensional array whose rows are dense Ylm coefficient vectors.
         """
+        coeffArray = jax.vmap(self._singleMap)(timeArray)
+        return coeffArray
 
-        if not hasattr(time, '__iter__'):
-                time = [time]
+    # Retrieve the disk-integrated flux from the surface map at a single time.
+    # This helper is vectorized by ``computeFlux`` for arrays of times.
+    def _singleFlux(self, time):
+        """Return the disk-integrated flux at a single time."""
+        if self.binaryFlag:
+            return self.binaryFlux(time)
 
-        coeffArray = self.computePulsation(time)
-        fluxArray = np.zeros(len(time))
+        coeffArray = self._singleMap(time)
+        testMap = self._surfaceFromCoeffs(coeffArray)
+        flux = surface_light_curve(testMap)
+        return flux
 
-        if binaryIndicator == True:
-            for i,t in enumerate(time):
-                self.sys.primary.map.y[1:] = coeffArray[i][1:]
-                fluxArray[i] = self.sys.flux(t)
+    # JAX vmap function to iterate _singleFlux over an array of time values.
+    def computeFlux(self, timeArray):
+        """Compute disk-integrated fluxes for an array of time values.
 
+        Parameters
+        ----------
+        timeArray : array_like of float
+            Time values at which to evaluate the light curve.
+
+        Returns
+        -------
+        array_like
+            Disk-integrated flux at each time step.
+        """
+        flux = jax.vmap(self._singleFlux)(timeArray)
+        return flux
+
+    # Initialize star into a binary system with default orbital parameters.
+    def insertBinary(self, m1=1.0, r1=1.0, m2=1.0, r2=1.0, period=1.0, tTransit=0.0):
+        """Insert the pulsating star as the primary of an eclipsing binary.
+
+        Parameters
+        ----------
+        m1 : float, default=1.0
+            Mass of the primary star.
+        r1 : float, default=1.0
+            Radius of the primary star.
+        m2 : float, default=1.0
+            Mass of the secondary star.
+        r2 : float, default=1.0
+            Radius of the secondary star.
+        period : float, default=1.0
+            Orbital period of the binary system.
+        tTransit : float, default=0.0
+            Time of eclipse occultation transit.
+        """
+        central = jx.orbits.keplerian.Central(mass=m1, radius=r1)
+        secondary = jx.orbits.keplerian.Body(
+            time_transit=tTransit,
+            period=period,
+            mass=m2,
+            radius=r2,
+        )
+        self.system = starry.orbit.SurfaceSystem(central=central, central_surface=self._map)
+        self.system = self.system.add_body(secondary)
+        self.binaryFlag = True
+
+        return "Star inserted into binary system."
+
+    # Calculate the coefficients for the primary star in a binary system at a
+    # given time value. This is vectorized by ``computeBinary``.
+    def binaryFlux(self, time=0.0):
+        """Compute flux output from the pulsating star in an eclipsing binary.
+
+        Parameters
+        ----------
+        time : float, default=0.0
+            Time value at which to evaluate the binary light curve.
+
+        Returns
+        -------
+        float
+            Binary-system flux at ``time``.
+        """
+        newCoeffs = self._singleMap(time)
+        self.system.central_surface.y.data.update(starry.ylm.Ylm.from_dense(newCoeffs, normalize=False).data)
+        flux = jx.starry.light_curves.light_curve(self.system)
+        return flux(time)[0]
+
+    # JAX vmap function to iterate binaryFlux over an array of time values.
+    def computeBinary(self, timeArray):
+        """Compute binary-system fluxes for an array of time values.
+
+        Parameters
+        ----------
+        timeArray : array_like of float
+            Time values at which to evaluate the binary light curve.
+
+        Returns
+        -------
+        array_like
+            Binary-system flux at each time step.
+        """
+        flux = jax.vmap(self.binaryFlux)(timeArray)
+        return flux
+
+    def discretizeSurface(
+        self,
+        time=0.0,
+        lon=None,
+        lat=None,
+        nLon=72,
+        nLat=36,
+        degrees=True,
+        grid=True,
+    ):
+        """Sample local surface fluxes on longitude and latitude coordinates.
+
+        Parameters
+        ----------
+        time : float or array_like of float, default=0.0
+            Time or times at which to evaluate the pulsating surface.
+        lon : float or array_like of float, optional
+            Longitude coordinate(s). If omitted, an evenly spaced longitude grid
+            is generated using ``nLon`` samples.
+        lat : float or array_like of float, optional
+            Latitude coordinate(s). If omitted, an evenly spaced latitude grid is
+            generated using ``nLat`` samples.
+        nLon : int, default=72
+            Number of generated longitude samples when ``lon`` is omitted.
+        nLat : int, default=36
+            Number of generated latitude samples when ``lat`` is omitted.
+        degrees : bool, default=True
+            Interpret and return coordinates in degrees. If false, radians are
+            used throughout.
+        grid : bool, default=True
+            If true, make a full latitude-longitude mesh. If false, evaluate
+            paired/broadcast coordinates point-by-point.
+
+        Returns
+        -------
+        lonPoints : array_like
+            Longitude coordinates with the same coordinate shape as ``flux``.
+        latPoints : array_like
+            Latitude coordinates with the same coordinate shape as ``flux``.
+        flux : array_like
+            Local surface intensity, or specific surface flux, at each point.
+            For multiple times, the time axis is prepended to the coordinate
+            shape.
+
+        Notes
+        -----
+        This method samples the map itself. It is not disk-integrated; use
+        :meth:`computeFlux` for observed light curves.
+        """
+        if lon is None:
+            if int(nLon) < 1:
+                raise ValueError("nLon must be at least 1.")
+            if degrees:
+                # Drop the duplicated endpoint so the grid does not sample both
+                # -180 and +180 degrees.
+                lon_values = jnp.linspace(-180.0, 180.0, int(nLon) + 1)[:-1]
+            else:
+                lon_values = jnp.linspace(-jnp.pi, jnp.pi, int(nLon) + 1)[:-1]
         else:
-            for i in range(len(time)):
-                self._map.y[:] = coeffArray[i,:]
-                fluxArray[i] = self._map.flux()
-        
-        return fluxArray
-    
-    #Internal starry dummy object
-    
-    #Construct binary system model using stellar pulsation source as primary and black source as secondary
-    def setBinarySystem(self, r1, m1, r2, m2, sbRatio, period, t0, inc=90):
-        """Inserts star within binary system with given paramater inputs
+            lon_values = jnp.asarray(lon)
 
-        ### Parameters
-
-        r1 : float
-            Radius of primary star
-
-        m1 : float
-            Mass of primary star
-
-        r2 : float
-            Radius of secondary star
-
-        m2 : float
-            Mass of secondary star
-
-        sbRatio : float (Must be positive or 0)
-            Value of magnitude ratio of fluxes between primary and secondary star.  Higher value equals brighter secondary
-
-        
-        ### Returns
-
-        ### Example
-        
-        """
-
-        pri = starry.Primary(self._map, r=r1, m=m1, prot=np.inf)
-            #starry.Primary(starry.Map(ydeg=primary.ydeg, inc=primary.inc, amp=amp1), r=r1, m=m1, prot=np.inf)
-        sec = starry.Secondary(starry.Map(ydeg=0, inc=0, amp=sbRatio), r=r2, m=m2, porb=period, prot=np.inf, t0=t0, inc=inc)
-
-        self.sys = starry.System(pri, sec)
-
-        # compute flux once to try to prime everything
-        _ = self.sys.flux(0)
-
-
-    def visualizeStar(self, startTime, endTime, timeStep=None):
-        """Construct animated gif visualizing star's pulsation over specific time period
-
-        ### Parameters
-        
-        ### Returns
-
-        ### Example
-        
-        """
-
-        # SOLUTION TO FLASHING/SLOW PULSATION: Have user give start and end time, throw Nyquist warning if higher than the nyquist frequency
-        # if not hasattr(time, '__iter__'):
-        #         time = [time]
-
-        maxFreq = np.nanmax(self.freq)
-
-        if(timeStep is None):
-            step = 1.0/(maxFreq*40.0)
+        if lat is None:
+            if int(nLat) < 1:
+                raise ValueError("nLat must be at least 1.")
+            if degrees:
+                lat_values = jnp.linspace(-90.0, 90.0, int(nLat))
+            else:
+                lat_values = jnp.linspace(-0.5 * jnp.pi, 0.5 * jnp.pi, int(nLat))
         else:
-            step = timeStep
+            lat_values = jnp.asarray(lat)
 
-        timeArray = np.arange(startTime, endTime, step)
-        
-        # for i,t in enumerate(timeArray):
-        #     for f in self.freq:
-        #         if (time[i+1]-time[i]) > 1.0/f :
-        #             warnings.warn("WARNING: One or more periods skipped between timestamp frames")
-        #             break
-
-
-
-        fig = plt.figure(figsize=(5,5))
-        ax = fig.add_subplot(1,1,1)
-        ax.axis('off')
-
-#         norm = np.linalg.norm(fluxArray)
-#         normFluxArray = fluxArray/norm
-        # print(np.min(normFluxArray))
-        # print(np.max(normFluxArray))
-        #vRange = np.nanmax(np.abs(self.coeffArray.flatten() - 1/np.pi))
-        #vmid = 1.0/np.pi
-
-        
-
-        # Render the surface values first
-        rendered = []
-        # if self.inc == 90:
-        #     self.inc = 89.9
-        coeffArray = self.computePulsation(timeArray)
-        
-        for coeffs in tqdm(coeffArray):
-            self._map.y[:] = coeffs
-            rendered.append(self._map.render())
-
-        # Find most extreme surface brightness excursions for color bar
-        vRange = np.nanmax(np.abs(np.array(rendered).flatten() - 1/np.pi))
-        vmid = 1.0/np.pi
-
-        # Plot individual frames for animation
-        imList = []
-        for render in rendered:
-            im = ax.imshow(render, cmap="seismic_r", animated=True, vmin = vmid-vRange, vmax = vmid+vRange, origin = "lower")
-            imList.append([im])
-
-        #fig.colorbar(im)
-
-
-        anim = animation.ArtistAnimation(fig, imList, interval=50, blit=True)
-        writergif = animation.PillowWriter(fps=30)
-        gif = anim.save('Pulsation.gif',writer=writergif)
-        display(HTML(anim.to_jshtml()))
-        plt.close(fig)
-        #return(timeArray)
-
-        # video = anim.to_html5_video() 
-        # # embedding for the video 
-        # html = display.HTML(video) 
-        # # draw the animation 
-        # display(html)
-        # #plt.show()
-
-    def visualizeBinary(self, startTime, endTime, timeStep=None):
-        fig = plt.figure(figsize=(5,5))
-        ax = fig.add_subplot(1,1,1)
-        ax.axis('off')
-
-        # if not hasattr(time, '__iter__'):
-        #         time = [time]
-
-        maxFreq = np.nanmax(self.freq)
-
-        if(timeStep is None):
-            step = 1.0/(maxFreq*40.0)
+        # Build either a full mesh or a point-wise/broadcast coordinate array.
+        if grid:
+            lonPoints, latPoints = jnp.meshgrid(lon_values, lat_values)
         else:
-            step = timeStep
+            lonPoints, latPoints = jnp.broadcast_arrays(lon_values, lat_values)
 
-        timeArray = np.arange(startTime, endTime, step)
+        if degrees:
+            lonRad = lonPoints * jnp.pi / 180.0
+            latRad = latPoints * jnp.pi / 180.0
+        else:
+            lonRad = lonPoints
+            latRad = latPoints
 
-        coeffArray = self.computePulsation(timeArray)
+        # ``Surface.intensity`` evaluates local map brightness at rest-frame
+        # coordinates. Looping over time avoids mutating the stored map and keeps
+        # arbitrary user transform functions usable.
+        scalar_time = np.ndim(time) == 0
+        time_values = np.atleast_1d(np.asarray(time, dtype=float))
+        fluxes = []
+        for t in time_values:
+            coeffArray = self._singleMap(float(t))
+            sampleMap = self._surfaceFromCoeffs(coeffArray)
+            flux = sampleMap.intensity(latRad, lonRad)
+            if self.fcn is not None:
+                flux = self.fcn(flux)
+            fluxes.append(flux)
 
-        rendered = []
-        for coeffs in coeffArray[:,:]:
-            self._map.y[:] = coeffs
-            rendered.append(self._map.render())
+        flux = jnp.stack(fluxes)
+        if scalar_time:
+            flux = flux[0]
 
-        # Find most extreme surface brightness excursions for color bar
-        vRange = np.nanmax(np.abs(np.array(rendered).flatten() - 1/np.pi))
-        vmid = 1.0/np.pi
-        fileNames = []
-        
-        for i in range(len(timeArray)):
-            fileLength = int(np.ceil(np.log10(len(timeArray))))
-            self.sys.primary.map.y[:] = coeffArray[i,:]
-            fileNames.append(f"./BinaryImages/{i:0{fileLength}}.png")
-            self.sys.show(t=timeArray[i], figsize=(5, 5), cmap="seismic_r", file=fileNames[i])
-            #Insert new function call here: modified STARRY sys.show 
-        
-        frames = [Image.open(fileName).convert("RGBA") for fileName in fileNames]
-        newFrames = []
+        return lonPoints, latPoints, flux
 
-        for i, frame in tqdm(enumerate(frames)):
-            newFrame = Image.new(mode="RGBA", size=(frames[0].size), color="WHITE")
-            newFrame.paste(frame,(0,0))
-            #newFrame.convert('RGB')
-            newFrame.save(fileNames[i])
-            imageFrame = img.imread(fileNames[i])
-            im = ax.imshow(imageFrame, cmap="seismic_r", animated=True, vmin = vmid-vRange, vmax = vmid+vRange)
-            newFrames.append([im])
+    # Show visual representation of star object.
+    def show(self, time=None, inc=None, obl=None, phase=0.0, cmap="seismic_r", **kwargs):
+        """Display the pulsating stellar surface at a selected time.
 
-        #fig.colorbar(im)
-            
-        #newFrames[0].save("Binary.gif", format="GIF", append_images=newFrames, save_all=True, duration = 50, loop=0)
+        Parameters
+        ----------
+        time : float, optional
+            Time at which to render the pulsation state. If omitted, the current
+            map coefficients are rendered.
+        inc : float, optional
+            New inclination angle in degrees for the display.
+        obl : float, optional
+            New obliquity angle in degrees for the display.
+        phase : float, default=0.0
+            Reserved for compatibility with earlier notebook examples.
+        cmap : str, default="seismic_r"
+            Matplotlib colormap used for the rendered surface.
+        **kwargs
+            Additional keyword arguments reserved for future plotting options.
+        """
+        fig1, ax1 = plt.subplots(figsize=(4.25, 4.25))
 
-        anim = animation.ArtistAnimation(fig, newFrames, interval=50, blit=True)
-        display(HTML(anim.to_jshtml()))
-        writergif = animation.PillowWriter(fps=30)
-        gif = anim.save('BinaryPulsation.gif',writer=writergif)
-        plt.close(fig)
-        #return(timeArray)
+        if inc is not None:
+            self.inc = inc
+            self._map.inc = (self.inc + 90.0) * np.pi / 180.0
+        if obl is not None:
+            self.obl = obl
+            self._map.obl = self.obl * np.pi / 180.0
 
-        # anim = animation.ArtistAnimation(fig, frames, interval = 50, blit=True)
-        # writergif = animation.PillowWriter(fps=30)
-        # anim.save('Pulsation.gif',writer=writergif)
-        # display(HTML(anim.to_html5_video()))
+        if time is not None:
+            coeffArray = self._singleMap(time)
+            self._map.y.data.update(starry.ylm.Ylm.from_dense(coeffArray, normalize=False).data)
 
-    
-    def plot(self,var1,var2):
+        starry.visualization.show_surface(self._map, cmap=cmap, ax=ax1)
+
+    # Plot graph relating two parameters of star object.
+    def plot(self, var1, var2):
+        """Plot one PULSEY quantity against another.
+
+        Parameters
+        ----------
+        var1 : array_like
+            Values for the x-axis, commonly time.
+        var2 : array_like
+            Values for the y-axis, commonly flux.
+        """
         plt.figure(figsize=(10, 5))
-        plt.plot(var1, var2, lw=2, alpha = 1)
-        plt.scatter(var1, var2, color = 'black', alpha = 0.25, s = 10)
-        #plt.title("Integrated Flux over Time of Random Pulsation")
-        #plt.xlim(0,1)
+        plt.plot(var1, var2, lw=2, alpha=1)
+        plt.scatter(var1, var2, color="black", alpha=0.25, s=10)
         plt.xlabel("Time [s]", fontsize=20)
         plt.ylabel("Flux [normalized]", fontsize=20)
         plt.show()
 
+    # Create animation to visualize pulsation flux variabilities of star.
+    def Animate(self, timeArray):
+        """Animate the pulsating stellar surface over a time array.
+
+        Parameters
+        ----------
+        timeArray : array_like of float
+            Time values to render into the animation frames.
+        """
+        # Render the surface values first so the color scale can be chosen from
+        # the full sequence.
+        coeffArray = self.computeMap(timeArray)
+
+        def render(coeffs):
+            self._map.y.data.update(starry.ylm.Ylm.from_dense(coeffs, normalize=False).data)
+            return self._map.render()
+
+        rendered = jax.vmap(render)(coeffArray)
+
+        # Find the most extreme surface brightness excursions for a symmetric
+        # color range around the uniform-map value.
+        vRange = np.nanmax(np.abs(np.array(rendered).flatten() - 1 / np.pi))
+        vmid = 1.0 / np.pi
+
+        fig = plt.figure(figsize=(5, 5))
+        ax = fig.add_subplot(1, 1, 1)
+        ax.axis("off")
+        im = ax.imshow(
+            rendered[0],
+            cmap="seismic_r",
+            animated=True,
+            vmin=vmid - vRange,
+            vmax=vmid + vRange,
+            origin="lower",
+        )
+
+        def update(frame):
+            im.set_data(rendered[frame])
+            return [im]
+
+        if len(rendered) > 1500:
+            warnings.warn("WARNING: Animation too long. Will limit animation")
+            rendered = rendered[:1500]
+
+        anim = animation.FuncAnimation(fig, func=update, frames=len(rendered), interval=50, blit=True)
+        writergif = animation.PillowWriter(fps=30)
+        anim.save("Pulsation.gif", writer=writergif)
+        display(HTML(anim.to_jshtml()))
+        plt.close(fig)
 
 
-### OLD STUFF (MAYBE DELETE) ###
-"""
+# Function to determine position of a spherical harmonic mode coefficient in
+# the dense STARRY Ylm coefficient array.
+def lmIndex(l, m):
+    """Return the dense STARRY coefficient index for spherical harmonic ``(l, m)``.
 
-# Loop to create true flux array using newly determined phase offset values
-for i,time in enumerate(timeArray):
-    map.y[1:] = 0
-    for j in range(len(freq)):
-            l = lmMode[j][0]
-            m = lmMode[j][1]
-            posC,negC = _LxMx(time, m, frequency=freq[j],amp=amp[j]*ampScaleFactor[j], phase0=phase[j]+phaseOffsetArray[j])
+    STARRY stores real spherical harmonic coefficients in a one-dimensional
+    vector using ``index = l**2 + l + m``.
+    """
+    return (l**2 + l) + m
 
-            map[l,np.abs(m)]  += posC
-            if m != 0:
-                map[l,-np.abs(m)] += negC
-            
-    fluxArray[i] = map.flux()
-    mapArray[i] = map.render()
-    coeffArray[i] = map.y
-"""
+
+# Function to calculate coefficients used to construct a standing-wave
+# pulsation by combining positive and negative m modes.
+def _LxMx(t, m, frequency=1, amp=1, phase0=0):
+    """Construct pulsation coefficients for a spherical harmonic mode.
+
+    Parameters
+    ----------
+    t : float or array_like
+        Time value(s) of the periodic pulsation.
+    m : int or array_like of int
+        Azimuthal order(s). The sign determines the sine component direction.
+    frequency : float or array_like of float, default=1
+        Pulsation frequency.
+    amp : float or array_like of float, default=1
+        Pulsation amplitude.
+    phase0 : float or array_like of float, default=0
+        Phase offset in cycles.
+
+    Returns
+    -------
+    posCoeff : float or array_like
+        Cosine coefficient for the positive ``m`` component.
+    negCoeff : float or array_like
+        Sine coefficient for the negative ``m`` component.
+    """
+    posCoeff = amp * jnp.cos(2 * jnp.pi * ((frequency * t) + phase0))
+    negCoeff = -jnp.sign(m) * amp * jnp.sin(2 * jnp.pi * ((frequency * t) + phase0))
+    return posCoeff, negCoeff

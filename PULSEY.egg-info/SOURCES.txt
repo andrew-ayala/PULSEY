@@ -7,3 +7,4 @@ PULSEY.egg-info/SOURCES.txt
 PULSEY.egg-info/dependency_links.txt
 PULSEY.egg-info/requires.txt
 PULSEY.egg-info/top_level.txt
+tests/test_pulsey.py
