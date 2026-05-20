@@ -17,4 +17,210 @@ Requires-Dist: numpy
 
 # PULSEY
 
-A python package for modeling stellar pulsation. Now updated with JAX and JAXoplanet implementation.
+[![PyPI version](https://img.shields.io/pypi/v/PULSEY.svg)](https://pypi.org/project/PULSEY/)
+[![Documentation Status](https://readthedocs.org/projects/pulsey/badge/?version=latest)](https://pulsey.readthedocs.io/en/latest/)
+[![Python](https://img.shields.io/badge/python-3.x-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+PULSEY is a Python package for simulating stellar pulsations with
+time-dependent spherical harmonic surface maps. It builds on
+[`jaxoplanet.starry`](https://jax.exoplanet.codes/) to combine pulsation modes,
+compute disk-integrated flux curves, render evolving stellar surfaces, and
+sample local surface fluxes on longitude-latitude grids.
+
+The package is designed around a compact workflow:
+
+1. Define one or more pulsation modes with `(l, m)` spherical harmonic indices.
+2. Assign frequencies, amplitudes, and phases to those modes.
+3. Evaluate the evolving map or light curve over time.
+4. Inspect the surface at specific map coordinates with `discretizeSurface`.
+
+## Features
+
+- Combine multiple spherical harmonic pulsation modes into one evolving stellar
+  surface.
+- Compute dense STARRY-compatible map coefficient vectors with `computeMap`.
+- Compute disk-integrated flux curves with `computeFlux`.
+- Insert the pulsating star into a simple eclipsing binary model.
+- Render and animate stellar surface maps.
+- Discretize the surface and sample local flux/intensity values at specific
+  longitude and latitude points.
+- Build Sphinx documentation for Read the Docs.
+
+## Installation
+
+Install the latest released package from PyPI:
+
+```bash
+pip install PULSEY
+```
+
+Install from a local checkout while developing:
+
+```bash
+git clone https://github.com/andrew-ayala/PULSEY.git
+cd PULSEY
+pip install -e .
+```
+
+PULSEY currently depends on `numpy`, `jax`, and `jaxoplanet`.
+
+## Quick Start
+
+```python
+import numpy as np
+import PULSEY as p
+
+time = np.linspace(0.0, 1.0, 200)
+
+pulse = p.star(
+    lmModes=[[1, 0], [2, 1]],
+    freq=[1.0, 2.5],
+    amp=[0.01, 0.005],
+    phase=[0.0, 0.25],
+    inc=90.0,
+)
+
+flux = pulse.computeFlux(time)
+```
+
+`computeFlux` returns the disk-integrated flux at each requested time.
+
+## Surface Sampling
+
+Use `discretizeSurface` to evaluate local surface fluxes at longitude and
+latitude points. This samples the map itself, not the disk-integrated light
+curve.
+
+```python
+import numpy as np
+import PULSEY as p
+
+pulse = p.star(
+    lmModes=[[1, 0]],
+    freq=1.0,
+    amp=0.1,
+    phase=0.0,
+    inc=90.0,
+)
+
+lon, lat, surface_flux = pulse.discretizeSurface(
+    time=0.25,
+    lon=[0.0, 90.0, 180.0],
+    lat=[0.0, 45.0, -30.0],
+    grid=False,
+)
+
+print(np.asarray(surface_flux))
+```
+
+With `grid=False`, coordinates are paired point-by-point:
+
+```text
+(lon=0,   lat=0)    -> sampled flux
+(lon=90,  lat=45)   -> sampled flux
+(lon=180, lat=-30)  -> sampled flux
+```
+
+Generate a full latitude-longitude grid instead:
+
+```python
+lon, lat, surface_flux = pulse.discretizeSurface(
+    time=0.0,
+    nLon=72,
+    nLat=36,
+)
+```
+
+When multiple times are supplied, the returned flux array prepends a time axis
+to the coordinate shape.
+
+## Mollweide Surface Plot
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+lon, lat, surface_flux = pulse.discretizeSurface(
+    time=0.25,
+    nLon=181,
+    nLat=91,
+)
+
+fig = plt.figure(figsize=(9, 4.8))
+ax = fig.add_subplot(111, projection="mollweide")
+
+mesh = ax.pcolormesh(
+    np.deg2rad(np.asarray(lon)),
+    np.deg2rad(np.asarray(lat)),
+    np.asarray(surface_flux),
+    cmap="seismic_r",
+    shading="auto",
+)
+
+ax.grid(True, alpha=0.35)
+ax.set_title("PULSEY surface flux at t = 0.25")
+
+cbar = fig.colorbar(mesh, ax=ax, orientation="horizontal", pad=0.08)
+cbar.set_label("local surface flux")
+
+plt.show()
+```
+
+## Documentation
+
+The documentation source lives in [`docs/`](docs/) and is configured for Read
+the Docs with [`.readthedocs.yaml`](.readthedocs.yaml).
+
+- Read the Docs: <https://pulsey.readthedocs.io/en/latest/>
+- API reference: <https://pulsey.readthedocs.io/en/latest/api.html>
+- Usage guide: <https://pulsey.readthedocs.io/en/latest/usage.html>
+
+Build the documentation locally:
+
+```bash
+pip install -r docs/requirements.txt
+sphinx-build -b html docs docs/_build/html
+```
+
+Then open:
+
+```text
+docs/_build/html/index.html
+```
+
+## Development
+
+Build a wheel locally:
+
+```bash
+python -m pip wheel --no-deps --wheel-dir dist .
+```
+
+Run the test suite:
+
+```bash
+python -m pytest
+```
+
+## Project Layout
+
+```text
+PULSEY/
+├── PULSEY/              # Package source
+│   ├── PULSEY.py        # Pulsation model and surface sampling tools
+│   └── __init__.py
+├── docs/                # Sphinx and Read the Docs documentation
+├── examples/            # Example notebooks and rendered animations
+├── tests/               # Test suite
+├── pyproject.toml       # Package metadata and build configuration
+└── README.md
+```
+
+## License
+
+PULSEY is distributed under the MIT License as declared in the package metadata.
+
+## Author
+
+Andrew Ayala
